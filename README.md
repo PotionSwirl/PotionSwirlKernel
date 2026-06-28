@@ -1,0 +1,3 @@
+# Brainrot26
+A prank OS to show my sister who she is in the mirror...or at least what I see...
+# Brainrot26
