@@ -18,20 +18,21 @@ GDT_Descriptor_t GDT_Descriptor;
 void GDT_Initialise() {
     GDT_Descriptor.Limit = sizeof(GDT) - 1;
     GDT_Descriptor.Base = (uint64_t) &GDT;
+    
     asm volatile (
-        "lgdt %0\n"
-        "mov $0x10, %%ax\n"
-        "mov %%ax, %%ds\n"
-        "mov %%ax, %%es\n"
-        "mov %%ax, %%fs\n"
-        "mov %%ax, %%gs\n"
-        "mov %%ax, %%ss\n"
-        "pushq $0x08\n"
-        "leaq 1f(%%rip), %%rax\n"
-        "pushq %%rax\n"
-        "lretq\n"
-        "1:\n"
+        "LGDT %0\n\t"
+        "MOV AX, 0x10\n\t"
+        "MOV DS, AX\n\t"
+        "MOV ES, AX\n\t"
+        "MOV FS, AX\n\t"
+        "MOV GS, AX\n\t"
+        "MOV SS, AX\n\t"
+        "PUSH 0x08\n\t"
+        "LEA RAX, [RIP + 1f]\n\t"
+        "PUSH RAX\n\t"
+        "LRETQ\n"
+        "1:\n\t"
         :: "m"(GDT_Descriptor)
-        : "rax", "memory"
+        : "rax", "memory" // C clobber list constraints must remain lowercase
     );
 }

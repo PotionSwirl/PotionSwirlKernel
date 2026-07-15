@@ -16,7 +16,7 @@ void puts(const char* s) {
     }
 }
 
-static void put_int(int val) {
+static void put_int(int64_t val) {
     if (val == 0) {
         putc('0');
         return;
@@ -25,7 +25,7 @@ static void put_int(int val) {
     // Don't need the [10] but makes it clearer that we access a digit here by (val % 10) as index
     char digits[10] = "0123456789";
     // This will store the individual chars to print for the number
-    char buffer[12];   // -2147483648 lowest 32-bit signed int you can have on computers
+    char buffer[20];   // -9,223,372,036,854,775,808 lowest 64-bit signed int you can have on computers
     int cur = 0;
     bool is_neg = false;
 
@@ -53,10 +53,15 @@ static void put_int(int val) {
 
 }
 
-static void put_hex(unsigned int val) {
+static void put_hex(uint64_t val) {
+
+    if (val == 0) {
+        putc('0');
+        return;
+    }
 
     char digits[16] = "0123456789ABCDEF";
-    char buffer[8];
+    char buffer[16];
     int cur = 0;
 
     while (val > 0) {
@@ -93,12 +98,12 @@ void printf(const char* fmt, ...) {
                     break;
                 }
                 case 'd': {
-                    int n = va_arg(args, int);
+                    int64_t n = va_arg(args, int64_t);
                     put_int(n);
                     break;
                 }
                 case 'x': {
-                    int n = va_arg(args, unsigned int);
+                    uint64_t n = va_arg(args, uint64_t);
                     put_hex(n);
                     break;
                 }
@@ -121,4 +126,18 @@ void printf(const char* fmt, ...) {
 
     // We're finished
     va_end(args);
+}
+
+
+/************ MEMORY ************/
+
+void memset(void* Object, char Value, uint32_t Count) {
+
+    char* Cursor = (char*) Object;
+
+    while (Count > 0) {
+        *Cursor++ = Value;
+        Count--;
+    }
+
 }

@@ -1,6 +1,7 @@
 ASM = nasm
+AFLAGS = -f elf64
 CC = gcc
-CFLAGS = -ffreestanding -m64 -mno-red-zone -nostdlib -Wall -Wextra -fno-pie -fno-pic -I/usr/include/efi -I/usr/include/efi/x86_64
+CFLAGS = -ffreestanding -m64 -masm=intel -mno-red-zone -nostdlib -Wall -Wextra -fno-pie -fno-pic -I/usr/include/efi -I/usr/include/efi/x86_64
 CFLAGS_BOOT = -ffreestanding -fshort-wchar -mno-red-zone -DEFI_FUNCTION_WRAPPER -I/usr/include/efi -I/usr/include/efi/x86_64 -Wall
 LD = ld
 LD_FLAGS = -nostdlib -z max-page-size=0x1000
@@ -8,7 +9,7 @@ LD_FLAGS_BOOT = -nostdlib -shared -Wl,-znocombreloc -Wl,-Bsymbolic -Wl,-z,notext
 
 all: BOOT Find Kernel.elf Image Run
 
-# Find every C and ASMfile in Source folder
+# Find every C and ASM file in Source folder
 C_SOURCES := $(shell find Source -name "*.c" ! -name "Bootx64.c")
 ASM_SOURCES := $(shell find Source -name "*.asm")
 
@@ -33,7 +34,7 @@ Build/%.o: Source/%.c
 	$(CC) $(CFLAGS) -c $< -o $@
 
 Build/%.o: Source/%.asm
-	$(ASM) -f elf64 $< -o $@
+	$(ASM) $(AFLAGS) $< -o $@
 
 # Build Kernel.elf
 Kernel.elf: $(OBJ_FILES)
@@ -41,10 +42,16 @@ Kernel.elf: $(OBJ_FILES)
 
 # Write files to USB in UEFI format
 USB:
-	echo Whoops don't have anything for this just yet!
+	sudo mount -t drvfs D: /mnt/d
+	sudo losetup -Pf Build/NVME.img
+	sudo mount /dev/loop0p1 /tmp/NVME
+	sudo rm -f /tmp/NVME/NvVars
+	cp -r /tmp/NVME/. /mnt/d/
+	sudo umount /tmp/NVME
+	sudo losetup -d /dev/loop0
+	sudo umount /mnt/d
 
 Image:
-	# Mount NVMe image and copy files, then unmount
 	sudo losetup -Pf Build/NVME.img
 	mkdir -p /tmp/NVME
 	sudo mount /dev/loop0p1 /tmp/NVME

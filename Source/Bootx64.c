@@ -376,6 +376,12 @@ EFI_STATUS efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable) {
     BootInfoArgument.GraphicsOutputProtocol = GraphicsOutputProtocolArgument;
     BootInfoArgument.IOAPICAddress = IOAPICAddressArgument;
     BootInfoArgument.ECAMBaseAddress = ECAMBaseAddressArgument;
+    // Memory info
+    BootInfoArgument.MemoryInfo.MemoryMap = MemoryMap;
+    BootInfoArgument.MemoryInfo.MemoryMapSize = MemoryMapSize;
+    BootInfoArgument.MemoryInfo.MemoryMapKey = MemoryMapKey;
+    BootInfoArgument.MemoryInfo.DescriptorSize = DescriptorSize;
+    BootInfoArgument.MemoryInfo.DescriptorVersion = DescriptorVersion;
     BootInfoArgument.FontBuffer = FontBufferArgument;
     
     void (*kmain)(BootInfo_t BootInfoArgument) = (void (*)(BootInfo_t)) ELFHeader->ELF_ProgramEntry;
