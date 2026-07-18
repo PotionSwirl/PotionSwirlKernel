@@ -264,6 +264,7 @@ EFI_STATUS efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable) {
     ACPI_MADT_t* MADT;
     ACPI_MCFG_t* MCFG;
     uint64_t ECAMBaseAddressArgument;
+    uint64_t ECAMSizeArgument;
 
     for (uint32_t i = 0; i < XSDTEntryCount; i++) {
 
@@ -280,6 +281,7 @@ EFI_STATUS efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable) {
             ACPI_MCFG_Entry_t* Entry = &(MCFG->Entries[0]);
             // Only care about first entry in MCFG.
             ECAMBaseAddressArgument = Entry->BaseAddress;
+            ECAMSizeArgument = (Entry->EndBus - Entry->StartBus + 1) * 0x100000;
         }
 
     }
@@ -376,6 +378,7 @@ EFI_STATUS efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable) {
     BootInfoArgument.GraphicsOutputProtocol = GraphicsOutputProtocolArgument;
     BootInfoArgument.IOAPICAddress = IOAPICAddressArgument;
     BootInfoArgument.ECAMBaseAddress = ECAMBaseAddressArgument;
+    BootInfoArgument.ECAMSize = ECAMSizeArgument;
     // Memory info
     BootInfoArgument.MemoryInfo.MemoryMap = MemoryMap;
     BootInfoArgument.MemoryInfo.MemoryMapSize = MemoryMapSize;

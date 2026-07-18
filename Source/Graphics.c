@@ -16,6 +16,7 @@ static int ConsoleTextHeight;
 // The next available console cell to print to.
 static Graphics_Point_t ConsoleCurrentPoint;
 
+
 void Graphics_Initialise(EFI_GRAPHICS_OUTPUT_PROTOCOL* GraphicsOutputProtocolArgument, PSF2Font_FileHeader* FontBufferArgument) {
 
     GraphicsOutputProtocol = GraphicsOutputProtocolArgument;
@@ -27,12 +28,14 @@ void Graphics_Initialise(EFI_GRAPHICS_OUTPUT_PROTOCOL* GraphicsOutputProtocolArg
     
 }
 
+
 Graphics_Point_t Graphics_CreatePoint(int X, int Y) {
     Graphics_Point_t Point;
     Point.X = X;
     Point.Y = Y;
     return Point;
 }
+
 
 void Graphics_RenderCharacter(Graphics_Point_t FrameBufferStartPixel, unsigned char Character, uint32_t Colour) {
 
@@ -56,6 +59,7 @@ void Graphics_RenderCharacter(Graphics_Point_t FrameBufferStartPixel, unsigned c
     }
 }
 
+
 void Graphics_RenderText(Graphics_Point_t FrameBufferStartPixel, const char* String, uint32_t Colour) {
 
     while (*String != 0) {
@@ -65,6 +69,7 @@ void Graphics_RenderText(Graphics_Point_t FrameBufferStartPixel, const char* Str
     }
 
 }
+
 
 void Graphics_PrintCharacter(char Character) {
 
@@ -102,6 +107,7 @@ void Graphics_PrintCharacter(char Character) {
 
 }
 
+
 void Graphics_FrameBufferDrawRectangle(Graphics_Point_t FrameBufferStartPixel, Graphics_Point_t FrameBufferEndPixel, uint32_t Colour) {
     for (int X = FrameBufferStartPixel.X; X < FrameBufferEndPixel.X; X++) {
         for (int Y = FrameBufferStartPixel.Y; Y < FrameBufferEndPixel.Y; Y++) {
@@ -110,35 +116,43 @@ void Graphics_FrameBufferDrawRectangle(Graphics_Point_t FrameBufferStartPixel, G
     }
 }
 
+
 int Graphics_GetConsoleTextWidth() {
     return ConsoleTextWidth;
 }
+
 
 int Graphics_GetConsoleTextHeight() {
     return ConsoleTextHeight;
 }
 
+
 int Graphics_GetHorizontalResolution() {
     return GraphicsOutputProtocol->Mode->Info->HorizontalResolution;
 }
+
 
 int Graphics_GetVerticalResolution() {
     return GraphicsOutputProtocol->Mode->Info->VerticalResolution;
 }
 
+
 int Graphics_GetFontWidth() {
     return FontBuffer->Width;
 }
 
+
 int Graphics_GetFontHeight() {
     return FontBuffer->Height;
 }
+
 
 void Graphics_ConsolePlot(Graphics_Point_t ConsolePoint, uint32_t Colour) {
     Graphics_Point_t FrameBufferStartPixel = Graphics_CreatePoint(ConsolePoint.X * FontBuffer->Width, ConsolePoint.Y * FontBuffer->Height);
     Graphics_Point_t FrameBufferEndPixel = Graphics_CreatePoint(FrameBufferStartPixel.X + FontBuffer->Width, FrameBufferStartPixel.Y + FontBuffer->Height);
     Graphics_FrameBufferDrawRectangle(FrameBufferStartPixel, FrameBufferEndPixel, Colour);
 }
+
 
 void Graphics_ConsoleDrawRectangle(Graphics_Point_t ConsoleStartPoint, Graphics_Point_t ConsoleEndPoint, uint32_t Colour) {
     for (int X = ConsoleStartPoint.X; X < ConsoleEndPoint.X; X++) {
@@ -147,4 +161,9 @@ void Graphics_ConsoleDrawRectangle(Graphics_Point_t ConsoleStartPoint, Graphics_
             Graphics_ConsolePlot(ConsolePoint, Colour);
         }
     }
+}
+
+
+void Graphics_ClearScreen() {
+    memset(Graphics_FrameBuffer, 0, GraphicsOutputProtocol->Mode->FrameBufferSize);
 }

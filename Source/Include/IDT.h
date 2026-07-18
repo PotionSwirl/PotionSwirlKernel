@@ -20,9 +20,12 @@ typedef struct __attribute__((packed)) {
 } IDT_Descriptor_t;
 
 void IDT_Initialise();
-void IDT_SetGate(int IRQPin, int Vector, void* HandlerAddress);
+void IDT_SetGateIOAPIC(int Vector, void* HandlerAddress);
+void IDT_SetGate(int Vector, void* HandlerAddress);
 
+void IDT_Vector14ExceptionHandler();
 void IDT_Vector33InterruptHandler();
 
 // Our ISRs from ISR.asm.
+extern void ISR_14();
 extern void ISR_33();

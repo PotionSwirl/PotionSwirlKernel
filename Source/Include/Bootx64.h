@@ -7,6 +7,7 @@
 #include <efi.h>
 #include "PSF2Font.h"
 
+
 typedef struct __attribute__((packed)) {
     EFI_MEMORY_DESCRIPTOR* MemoryMap;
     uint64_t MemoryMapSize;
@@ -15,10 +16,12 @@ typedef struct __attribute__((packed)) {
     uint32_t DescriptorVersion;
 } MemoryInfo_t;
 
+
 typedef struct __attribute__((packed)) {
     EFI_GRAPHICS_OUTPUT_PROTOCOL* GraphicsOutputProtocol;
     uint32_t IOAPICAddress;
     uint64_t ECAMBaseAddress;
+    uint64_t ECAMSize;
     MemoryInfo_t MemoryInfo;
     PSF2Font_FileHeader* FontBuffer;
 } BootInfo_t;

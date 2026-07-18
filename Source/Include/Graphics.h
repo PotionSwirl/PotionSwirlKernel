@@ -25,3 +25,4 @@ int Graphics_GetFontWidth();
 int Graphics_GetFontHeight();
 void Graphics_ConsolePlot(Graphics_Point_t ConsolePoint, uint32_t Colour);
 void Graphics_ConsoleDrawRectangle(Graphics_Point_t ConsoleStartPoint, Graphics_Point_t ConsoleEndPoint, uint32_t Colour);
+void Graphics_ClearScreen();

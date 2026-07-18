@@ -141,3 +141,15 @@ void memset(void* Object, char Value, uint32_t Count) {
     }
 
 }
+
+
+void memcpy(void* Destination, const void* Source, uint32_t Count) {
+
+    uint8_t* DestinationPointer = (uint8_t*) Destination;
+    const uint8_t* SourcePointer = (uint8_t*) Source;
+
+    while (Count--) {
+        *DestinationPointer++ = *SourcePointer++;
+    }
+
+}

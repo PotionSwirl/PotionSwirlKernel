@@ -72,6 +72,7 @@ static volatile int Tail = 0;          // Latest character grabbed by kernel
 static bool Shift  = false;
 static bool Capslock = false;
 
+
 void Keyboard_Vector33InterruptHandlePassover(uint8_t Scancode) {
 
     // If it's a key RELEASE and it's Shift, set Shift to false.
@@ -116,6 +117,7 @@ void Keyboard_Vector33InterruptHandlePassover(uint8_t Scancode) {
     Head = NextHead;
 
 }
+
 
 char Keyboard_GetCharacter() {
 

@@ -3,6 +3,9 @@
 #include "Include/Paging.h"
 #include "Include/Bootx64.h"
 #include "Include/Libraries.h"
+#include "Include/APIC.h"
+#include "Include/Graphics.h"
+
 
 // The structures that keep track of our pages
 static uint64_t* PML4;
@@ -15,6 +18,7 @@ static uint64_t UsableMemory = 0;
 static uint64_t TotalPages;
 static uint64_t FreePages = 0;
 
+
 // Everything that sets up paging when we start up
 
 void Paging_Initialise(BootInfo_t BootInfo) {
@@ -23,10 +27,14 @@ void Paging_Initialise(BootInfo_t BootInfo) {
     MemoryBitmapInitialise(BootInfo.MemoryInfo);
 
     // Set up PML4
-    PML4 = AllocatePage();
+    PML4 = Paging_AllocatePage();
     memset(PML4, 0, PAGING_PAGE_SIZE);
 
-    // Identity-map the following memory
+    // Identity-map the following memory:
+
+    // Conventional memory
+
+    void* PhysicalAddress;
 
     EFI_MEMORY_DESCRIPTOR* CurrentMemoryDescriptor = (EFI_MEMORY_DESCRIPTOR*) BootInfo.MemoryInfo.MemoryMap;
     EFI_MEMORY_DESCRIPTOR* LastMemoryDescriptor = (EFI_MEMORY_DESCRIPTOR*) (((uint8_t*) BootInfo.MemoryInfo.MemoryMap) + BootInfo.MemoryInfo.MemoryMapSize);
@@ -40,15 +48,8 @@ void Paging_Initialise(BootInfo_t BootInfo) {
             || CurrentMemoryDescriptor->Type == EfiBootServicesData
             || CurrentMemoryDescriptor->Type == EfiACPIReclaimMemory) {
 
-            uint64_t PhysicalAddress;
-
-            if (CurrentMemoryDescriptor->PhysicalStart % PAGING_PAGE_SIZE != 0) {
-                PhysicalAddress = PageAlignRoundUp(CurrentMemoryDescriptor->PhysicalStart) - PAGING_PAGE_SIZE;
-            } else {
-                PhysicalAddress = CurrentMemoryDescriptor->PhysicalStart;
-            }
-
-            MapMemory((void*) PhysicalAddress, (void*) PhysicalAddress, PAGING_PAGE_PRESENT | PAGING_PAGE_WRITABLE, CurrentMemoryDescriptor->NumberOfPages);
+            PhysicalAddress = (void*) Paging_PageAlignRoundDown(CurrentMemoryDescriptor->PhysicalStart);
+            Paging_MapMemory(PhysicalAddress, PhysicalAddress, PAGING_PAGE_PRESENT | PAGING_PAGE_WRITABLE, CurrentMemoryDescriptor->NumberOfPages);
 
         }
 
@@ -56,15 +57,23 @@ void Paging_Initialise(BootInfo_t BootInfo) {
 
     }
 
-    uint64_t PhysicalAddress;
+    // Framebuffer
 
-    if (CurrentMemoryDescriptor->PhysicalStart % PAGING_PAGE_SIZE != 0) {
-        PhysicalAddress = PageAlignRoundUp(BootInfo.GraphicsOutputProtocol->Mode->FrameBufferBase) - PAGING_PAGE_SIZE;
-    } else {
-        PhysicalAddress = BootInfo.GraphicsOutputProtocol->Mode->FrameBufferBase;
-    }
+    PhysicalAddress = (void*) Paging_PageAlignRoundDown(BootInfo.GraphicsOutputProtocol->Mode->FrameBufferBase);
+    Paging_MapMemory(PhysicalAddress, PhysicalAddress, PAGING_PAGE_PRESENT | PAGING_PAGE_WRITABLE, BytesToPages(BootInfo.GraphicsOutputProtocol->Mode->FrameBufferSize));
 
-    MapMemory((void*) PhysicalAddress, (void*) PhysicalAddress, PAGING_PAGE_PRESENT | PAGING_PAGE_WRITABLE, BytesToPages(BootInfo.GraphicsOutputProtocol->Mode->FrameBufferSize));
+    // ECAM
+
+    PhysicalAddress = (void*) BootInfo.ECAMBaseAddress;
+    Paging_MapMemory(PhysicalAddress, PhysicalAddress, PAGING_PAGE_PRESENT | PAGING_PAGE_WRITABLE | PAGING_PAGE_WRITE_THROUGH | PAGING_PAGE_CACHE_DISABLE | PAGING_PAGE_NO_EXECUTE, BytesToPages(BootInfo.ECAMSize));
+
+    // APIC
+
+    PhysicalAddress = (void*) (uint64_t) BootInfo.IOAPICAddress;
+    Paging_MapPage(PhysicalAddress, PhysicalAddress, PAGING_PAGE_PRESENT | PAGING_PAGE_WRITABLE | PAGING_PAGE_WRITE_THROUGH | PAGING_PAGE_CACHE_DISABLE | PAGING_PAGE_NO_EXECUTE);
+
+    PhysicalAddress = (void*) APIC_GetBase();
+    Paging_MapPage(PhysicalAddress, PhysicalAddress, PAGING_PAGE_PRESENT | PAGING_PAGE_WRITABLE | PAGING_PAGE_WRITE_THROUGH | PAGING_PAGE_CACHE_DISABLE | PAGING_PAGE_NO_EXECUTE);
 
     // And finally, switch to paging!
 
@@ -74,7 +83,7 @@ void Paging_Initialise(BootInfo_t BootInfo) {
 
 // Switching to paging mode
 
-static void LoadCR3() {
+void LoadCR3() {
     asm volatile(
         "MOV CR3, %0"
         :
@@ -93,10 +102,10 @@ static void LoadCR3() {
 //      39-47 = PML4 index
 //      48-63 = required extension
 
-static void MapMemory(void* VirtualAddress, void* PhysicalAddress, uint64_t Flags, uint64_t NumberOfPages) {
+void Paging_MapMemory(void* VirtualAddress, void* PhysicalAddress, uint64_t Flags, uint64_t NumberOfPages) {
 
     for (uint64_t i = 0; i < NumberOfPages; i++) {
-        MapPage(VirtualAddress, PhysicalAddress, Flags);
+        Paging_MapPage(VirtualAddress, PhysicalAddress, Flags);
         VirtualAddress += PAGING_PAGE_SIZE;
         PhysicalAddress += PAGING_PAGE_SIZE;
     }
@@ -104,7 +113,7 @@ static void MapMemory(void* VirtualAddress, void* PhysicalAddress, uint64_t Flag
 }
 
 
-static void MapPage(void* VirtualAddress, void* PhysicalAddress, uint64_t Flags) {
+void Paging_MapPage(void* VirtualAddress, void* PhysicalAddress, uint64_t Flags) {
 
     uint64_t ConvertedVirtualAddress = (uint64_t) VirtualAddress;
 
@@ -125,7 +134,7 @@ static void MapPage(void* VirtualAddress, void* PhysicalAddress, uint64_t Flags)
 }
 
 
-static uint64_t* GetNextPagingStructure(uint64_t* CurrentPagingStructure, uint64_t Index) {
+uint64_t* GetNextPagingStructure(uint64_t* CurrentPagingStructure, uint64_t Index) {
 
     // Check if the entry is present
 
@@ -136,7 +145,7 @@ static uint64_t* GetNextPagingStructure(uint64_t* CurrentPagingStructure, uint64
 
     // If it isn't, create a new entry
 
-    uint64_t* NewStructure = AllocatePage();
+    uint64_t* NewStructure = Paging_AllocatePage();
 
     if (NewStructure == NULL) return NULL;
 
@@ -151,7 +160,7 @@ static uint64_t* GetNextPagingStructure(uint64_t* CurrentPagingStructure, uint64
 
 // Page allocation - scan through bitmap for free page, calculate address and return
 
-static void* AllocatePage() {
+void* Paging_AllocatePage() {
 
     for (uint64_t i = 0; i < TotalPages; i++) {
         if (!(MemoryBitmapTestPage(i))) {
@@ -166,7 +175,7 @@ static void* AllocatePage() {
 }
 
 
-static void FreePage(void* Address) {
+void FreePage(void* Address) {
 
     uint64_t Page;
     
@@ -188,7 +197,7 @@ static void FreePage(void* Address) {
 
 // Memory bitmap helpers
 
-static void MemoryBitmapInitialise(MemoryInfo_t MemoryInfo) {
+void MemoryBitmapInitialise(MemoryInfo_t MemoryInfo) {
 
     // Find the size the bitmap should be, as well as highest memory address
 
@@ -260,7 +269,7 @@ static void MemoryBitmapInitialise(MemoryInfo_t MemoryInfo) {
     }
 
     /* Reserve page 0 so that we don't confuse a returned page address
-       of 0x0 with NULL from AllocatePage(). */
+       of 0x0 with NULL from Paging_AllocatePage(). */
 
     MemoryBitmapSet(0);
 
@@ -276,28 +285,45 @@ static void MemoryBitmapInitialise(MemoryInfo_t MemoryInfo) {
 }
 
 
-static void MemoryBitmapSet(uint64_t Page) {
+void MemoryBitmapSet(uint64_t Page) {
     MemoryBitmap[Page / 8] |= (1 << (Page % 8));
 }
 
 
-static void MemoryBitmapClear(uint64_t Page) {
+void MemoryBitmapClear(uint64_t Page) {
     MemoryBitmap[Page / 8] &= ~(1 << (Page % 8));
 }
 
 
-static bool MemoryBitmapTestPage(uint64_t Page) {
+bool MemoryBitmapTestPage(uint64_t Page) {
     return ((MemoryBitmap[Page / 8] & (1 << (Page % 8))) != 0);
 }
 
 
 // Paging math helpers
 
-static uint64_t PageAlignRoundUp(uint64_t Value) {
+uint64_t PageAlignRoundUp(uint64_t Value) {
     return (Value + 0xFFF) & ~0xFFF;
 }
 
 
-static uint64_t BytesToPages(uint64_t Bytes) {
+uint64_t Paging_PageAlignRoundDown(uint64_t Value) {
+    return Value / PAGING_PAGE_SIZE * PAGING_PAGE_SIZE;
+}
+
+
+uint64_t BytesToPages(uint64_t Bytes) {
     return (Bytes + PAGING_PAGE_SIZE - 1) / PAGING_PAGE_SIZE;
+}
+
+
+// Page fault handler
+
+void Paging_Vector14ExceptionHandlePassover(uint64_t PageFaultAddress, uint64_t ErrorCode) {
+    Graphics_ClearScreen();
+    printf("EXCEPTION: PAGE FAULT\n");
+    printf("---------------------------------------\n");
+    printf("Page fault address: 0x%x\n", PageFaultAddress);
+    printf("Error code: 0x%x\n", ErrorCode);
+    while(true);
 }

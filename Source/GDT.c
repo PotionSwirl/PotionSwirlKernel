@@ -13,9 +13,12 @@ uint64_t GDT[] = {
     0x00AF92000000FFFF
 };
 
+
 GDT_Descriptor_t GDT_Descriptor;
 
+
 void GDT_Initialise() {
+
     GDT_Descriptor.Limit = sizeof(GDT) - 1;
     GDT_Descriptor.Base = (uint64_t) &GDT;
     
@@ -33,6 +36,7 @@ void GDT_Initialise() {
         "LRETQ\n"
         "1:\n\t"
         :: "m"(GDT_Descriptor)
-        : "rax", "memory" // C clobber list constraints must remain lowercase
+        : "rax", "memory"
     );
+
 }
