@@ -25,6 +25,7 @@ void PCI_InitialiseDevices(uint64_t ECAMBaseAddress) {
                 uint8_t SubClass = (ClassRegister >> 16) & 0xFF;
 
                 if (ClassCode == CLASS_CODE_FOR_MASS_STORAGE_CONTROLLER && SubClass == SUBCLASS_FOR_NVME) {
+                    // Only initialise if NVMe exists
                     uint32_t BAR0Low = PCI_Read32Bit(ECAMBaseAddress, Bus, Device, Function, 0x10);
                     uint32_t BAR0High = PCI_Read32Bit(ECAMBaseAddress, Bus, Device, Function, 0x14);
                     NVMeBAR0 = (volatile uint8_t*) (((uint64_t) BAR0High << 32) | (BAR0Low & ~0xFULL));

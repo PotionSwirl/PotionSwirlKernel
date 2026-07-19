@@ -1,6 +1,7 @@
 #include <stdint.h>
 #include <stdbool.h>
 
+
 bool CPU_CPUSupportsAPIC() {
 
     uint32_t EAX, EBX, ECX, EDX;
@@ -15,6 +16,7 @@ bool CPU_CPUSupportsAPIC() {
 
 }
 
+
 uint64_t CPU_ReadMSR(uint32_t MSR) {
 
     uint32_t ValueLow, ValueHigh;
@@ -28,6 +30,7 @@ uint64_t CPU_ReadMSR(uint32_t MSR) {
     return ((uint64_t) ValueHigh << 32) | ValueLow;
 
 }
+
 
 void CPU_WriteMSR(uint32_t MSR, uint64_t Value) {
 

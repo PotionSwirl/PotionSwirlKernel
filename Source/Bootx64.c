@@ -387,8 +387,8 @@ EFI_STATUS efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable) {
     BootInfoArgument.MemoryInfo.DescriptorVersion = DescriptorVersion;
     BootInfoArgument.FontBuffer = FontBufferArgument;
     
-    void (*kmain)(BootInfo_t BootInfoArgument) = (void (*)(BootInfo_t)) ELFHeader->ELF_ProgramEntry;
-    kmain(BootInfoArgument);
+    void (*kmain)(BootInfo_t* BootInfoArgument) = (void (*)(BootInfo_t*)) ELFHeader->ELF_ProgramEntry;
+    kmain(&BootInfoArgument);
 
     while(true);
 

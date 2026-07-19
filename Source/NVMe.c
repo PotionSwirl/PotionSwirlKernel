@@ -2,6 +2,7 @@
 #include "Include/NVMe.h"
 #include "Include/Libraries.h"
 #include "Include/Paging.h"
+#include "Include/FAT32.h"
 
 
 static volatile uint8_t* NVMeBAR0;
@@ -27,11 +28,6 @@ static uint16_t IOCQHead = 0;
 static uint16_t MQES;
 static uint8_t DSTRD;
 static uint32_t IOSQDoorbellRegisterOffset;
-static NVMe_IdentifyController_t* IdentifyController;
-static NVMe_IdentifyNamespace_t* IdentifyNamespace;
-
-// We'll be reusing the same command with some changes
-static NVMe_Command_t* IdentifyControllerCommand;
 
 /* After writing an CQ entry, NVMe also writes a phase bit and flips
    when the CQ wraps around. The host (us) must maintain our own phase
@@ -44,34 +40,62 @@ static NVMe_Command_t* IdentifyControllerCommand;
 static uint8_t ACQPhaseBit = 1;
 static uint8_t IOCQPhaseBit = 1;
 
+// Generate unique IDs for every command (these can't be 0!)
+static uint64_t AdminCommandID = 1;
+static uint64_t IOCommandID = 1;
+
 
 void NVMe_Initialise(volatile uint8_t* NVMeBAR0Argument) {
 
     // Initialise globals
+
     NVMeBAR0 = NVMeBAR0Argument;
     uint64_t CAP = NVMe_Read64Bit(NVME_CAP_REGISTER_OFFSET);
     MQES = CAP & 0xFFFF;  // Lower 16 bits of CAP
     DSTRD = (CAP >> 32) & 0xF;
 
     // Set up the controller
+
     NVMe_DisableController();
     NVMe_InitialiseAdminQueues();
     NVMe_ReEnableController();
 
-    // Fetch important info about the controller
-    NVMe_IdentifyController();
-
-    // As well as the namespaces or separate 'sections'
-    // We'll focus on Namespace 1
-    NVMe_IdentifyNamespace();
-
     // We must set up I/O queues to read and write, USING the admin queues
+
     NVMe_InitialiseIOQueues();
+
+    // Run the Identify Namespace command to get bytes per sector
+
+    NVMe_IdentifyNamespace_t* IdentifyNamespace = Paging_AllocatePage();
+    memset(IdentifyNamespace, 0, PAGING_PAGE_SIZE);
+
+    NVMe_Command_t* IdentifyNamespaceCommand = NVMe_CreateAdminCommand();
+    
+    IdentifyNamespaceCommand->Opcode = NVME_IDENTIFY_COMMAND_OPCODE;
+    IdentifyNamespaceCommand->NamespaceID = 1;
+    IdentifyNamespaceCommand->PRP1 = (uint64_t) IdentifyNamespace;
+    IdentifyNamespaceCommand->CommandSpecificFields.IdentifyFields.CNS = NVME_COMMAND_SPECIFIC_DWORD_FOR_IDENTIFY_NAMESPACE;
+
+    NVMe_RingASQDoorbell();
+
+    // The bytes per sector is stored as a power of 2 in the Identify Namespace structure
+    // The index in the LBAF of where to get it is bits 0-3 of FLBAS
+
+    uint64_t BytesPerBlock = 1 << IdentifyNamespace->LBAF[IdentifyNamespace->FLBAS & 0xF].LBADS;
+
+    // We don't need it anymore
+
+    Paging_FreePage(IdentifyNamespace);
+
+    /* Pass the hardware-specific drive reading abstraction to the FAT32 driver,
+       as well as the bytes per sector. */
+
+    FAT32_Initialise(NVMe_ReadDrive, BytesPerBlock);
 
 }
 
 
-void NVMe_ReadDrive(uint64_t StartingLBA, uint16_t NumberOfSectors, void* PageAlignedBuffer) {
+void NVMe_ReadDrive(uint64_t StartingLBA, uint16_t NumberOfBlocks, void* PageAlignedBuffer) {
 
     NVMe_Command_t* ReadCommand = NVMe_CreateIOCommand();
     
@@ -79,7 +103,7 @@ void NVMe_ReadDrive(uint64_t StartingLBA, uint16_t NumberOfSectors, void* PageAl
     ReadCommand->NamespaceID = 1;
     ReadCommand->PRP1 = (uint64_t) PageAlignedBuffer;
     ReadCommand->CommandSpecificFields.ReadWriteFields.SLBA = StartingLBA;
-    ReadCommand->CommandSpecificFields.ReadWriteFields.NLB = NumberOfSectors - 1;
+    ReadCommand->CommandSpecificFields.ReadWriteFields.NLB = NumberOfBlocks - 1;
 
     NVMe_RingIOSQDoorbell();
 
@@ -102,6 +126,9 @@ void NVMe_RingASQDoorbell() {
     do {} while ((CompletionEntry->Status & 1) != ACQPhaseBit);
     ACQHead = (ACQHead + 1) % 64;
 
+    // If we wrap around, flip the phase bit
+    if (ACQHead == 0) ACQPhaseBit ^= 1;
+
 }
 
 
@@ -110,6 +137,7 @@ void NVMe_RingIOSQDoorbell() {
     NVMe_CompletionEntry_t* CompletionEntry = &IOCQ[IOCQHead];
     do {} while ((CompletionEntry->Status & 1) != IOCQPhaseBit);
     IOCQHead = (IOCQHead + 1) % 64;
+    if (IOCQHead == 0) IOCQPhaseBit ^= 1;
 }
 
 
@@ -121,7 +149,7 @@ NVMe_Command_t* NVMe_CreateAdminCommand() {
 
     /* Set the Command ID to the position in the queue (NOT starting from 0 as the ID is also 0
        in a fresh new command when everything is cleared to 0 and we would get confused). */
-    Command->CommandID = ASQTail + 1;
+    Command->CommandID = AdminCommandID++;
     ASQTail = (ASQTail + 1) % 64;
 
     return Command;
@@ -132,7 +160,7 @@ NVMe_Command_t* NVMe_CreateAdminCommand() {
 NVMe_Command_t* NVMe_CreateIOCommand() {
     NVMe_Command_t* Command = &IOSQ[IOSQTail];
     memset(Command, 0, sizeof(NVMe_Command_t));
-    Command->CommandID = IOSQTail + 1;
+    Command->CommandID = IOCommandID++;
     IOSQTail = (IOSQTail + 1) % 64;
     return Command;
 }
@@ -211,53 +239,6 @@ void NVMe_ReEnableController() {
     do {
         CSTS = NVMe_Read32Bit(NVME_CSTS_REGISTER_OFFSET);
     } while (!(CSTS & 1));
-
-}
-
-
-void NVMe_IdentifyController() {
-
-    // Get info about the controller by using the Identify Controller command
-    IdentifyController = Paging_AllocatePage();
-    memset(IdentifyController, 0, PAGING_PAGE_SIZE);
-
-    // Fetch a fresh command form to fill out
-    IdentifyControllerCommand = NVMe_CreateAdminCommand();
-
-    // To identify the command
-    IdentifyControllerCommand->Opcode = NVME_IDENTIFY_COMMAND_OPCODE;
-
-    // We're not using a namespace, just the controller
-    IdentifyControllerCommand->NamespaceID = 0;
-
-    // Tell the controller where to dump the info we need
-    IdentifyControllerCommand->PRP1 = (uint64_t) IdentifyController;
-
-    // For Identify Controller, Command-Specific DWORD 10 = 1
-    IdentifyControllerCommand->CommandSpecificFields.IdentifyFields.CNS = NVME_COMMAND_SPECIFIC_DWORD_FOR_IDENTIFY_CONTROLLER;
-
-    // And finally, submit the command
-    NVMe_RingASQDoorbell();
-
-}
-
-
-void NVMe_IdentifyNamespace() {
-
-    /* Same as command for Identify Controller, except change the command-specific DWORD to 0,
-       the place where we want to dump the data, and the namespace ID (we want namespace 1). */
-
-    IdentifyNamespace = Paging_AllocatePage();
-    memset(IdentifyNamespace, 0, PAGING_PAGE_SIZE);
-
-    NVMe_Command_t* IdentifyNamespaceCommand = NVMe_CreateAdminCommand();
-    
-    IdentifyNamespaceCommand->Opcode = NVME_IDENTIFY_COMMAND_OPCODE;
-    IdentifyNamespaceCommand->NamespaceID = 1;
-    IdentifyNamespaceCommand->PRP1 = (uint64_t) IdentifyNamespace;
-    IdentifyNamespaceCommand->CommandSpecificFields.IdentifyFields.CNS = NVME_COMMAND_SPECIFIC_DWORD_FOR_IDENTIFY_NAMESPACE;
-
-    NVMe_RingASQDoorbell();
 
 }
 

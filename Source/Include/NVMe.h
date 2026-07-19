@@ -157,7 +157,7 @@ typedef struct __attribute__((packed)) {
    in the LBAF entries to find information about the active LBA format,
    e.g. sector size. */
 
-typedef struct {
+typedef struct __attribute__((packed)) {
     uint64_t NSZE;
     uint64_t NCAP;
     uint64_t NUSE;
@@ -177,7 +177,7 @@ typedef struct {
 } NVMe_IdentifyNamespace_t;
 
 void NVMe_Initialise(volatile uint8_t* NVMeBAR0Argument);
-void NVMe_ReadDrive(uint64_t StartingLBA, uint16_t NumberOfSectors, void* Buffer);
+void NVMe_ReadDrive(uint64_t StartingLBA, uint16_t NumberOfBlocks, void* Buffer);
 void NVMe_RingASQDoorbell();
 void NVMe_RingIOSQDoorbell();
 NVMe_Command_t* NVMe_CreateAdminCommand();
@@ -185,8 +185,6 @@ NVMe_Command_t* NVMe_CreateIOCommand();
 void NVMe_DisableController();
 void NVMe_InitialiseAdminQueues();
 void NVMe_ReEnableController();
-void NVMe_IdentifyController();
-void NVMe_IdentifyNamespace();
 void NVMe_InitialiseIOQueues();
 void NVMe_CreateIOSQ();
 void NVMe_CreateIOCQ();

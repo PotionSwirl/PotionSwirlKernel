@@ -21,14 +21,14 @@
 #define PAGING_GET_NEXT_EFI_MEMORY_DESCRIPTOR(Descriptor, Size) \
     ((EFI_MEMORY_DESCRIPTOR*) (((uint8_t*) Descriptor) + Size))
 
-void Paging_Initialise(BootInfo_t BootInfo);
+void Paging_Initialise(BootInfo_t* BootInfo);
 void LoadCR3();
 void Paging_MapMemory(void* VirtualAddress, void* PhysicalAddress, uint64_t Flags, uint64_t NumberOfPages);
 void Paging_MapPage(void* VirtualAddress, void* PhysicalAddress, uint64_t Flags);
 uint64_t* GetNextPagingStructure(uint64_t* CurrentPagingStructure, uint64_t Index);
 void* Paging_AllocatePage();
-void FreePage(void* Address);
-void MemoryBitmapInitialise(MemoryInfo_t MemoryInfo);
+void Paging_FreePage(void* Address);
+void MemoryBitmapInitialise(MemoryInfo_t* MemoryInfo);
 void MemoryBitmapSet(uint64_t Page);
 void MemoryBitmapClear(uint64_t Page);
 bool MemoryBitmapTestPage(uint64_t Page);

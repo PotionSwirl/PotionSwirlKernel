@@ -9,12 +9,14 @@ void putc(char c) {
     Graphics_PrintCharacter(c);
 }
 
+
 void puts(const char* s) {
     while (*s != 0) {
         putc(*s);
         s++;
     }
 }
+
 
 static void put_int(int64_t val) {
     if (val == 0) {
@@ -53,6 +55,8 @@ static void put_int(int64_t val) {
 
 }
 
+
+
 static void put_hex(uint64_t val) {
 
     if (val == 0) {
@@ -74,6 +78,7 @@ static void put_hex(uint64_t val) {
     }
 
 }
+
 
 // THE GRAND PRINTF - only supports string, int and hex for now
 void printf(const char* fmt, ...) {
@@ -151,5 +156,21 @@ void memcpy(void* Destination, const void* Source, uint32_t Count) {
     while (Count--) {
         *DestinationPointer++ = *SourcePointer++;
     }
+
+}
+
+
+int memcmp(const void* Source1, const void* Source2, uint32_t Count) {
+
+    const unsigned char* Source1Bytes = (const unsigned char*) Source1;
+    const unsigned char* Source2Bytes = (const unsigned char*) Source2;
+
+    for (uint32_t i = 0; i < Count; i++) {
+        if (Source1Bytes[i] != Source2Bytes[i]) {
+            return 1;
+        }
+    }
+
+    return 0;
 
 }

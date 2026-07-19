@@ -12,17 +12,13 @@
 #include "Include/Paging.h"
 
 
-void kmain(BootInfo_t BootInfoArgument) {
+// This OS requires: APIC, NVMe, FAT32 system partition
+
+
+void kmain(BootInfo_t* BootInfoArgument) {
 
    // Give the Graphics Output Protocol and font data to the Graphics library to initialise its own variables.
-   Graphics_Initialise(BootInfoArgument.GraphicsOutputProtocol, BootInfoArgument.FontBuffer);
-
-   // Check if CPU supports the APIC (Advanced Programmable Interrupt Controller).
-   if (!CPU_CPUSupportsAPIC()) {
-      // If it doesn't, we can't continue since we don't have access to interrupts.
-      printf("This computer's CPU doesn't support APIC - which we need!\n");
-      while(true);
-   }
+   Graphics_Initialise(BootInfoArgument->GraphicsOutputProtocol, BootInfoArgument->FontBuffer);
 
    // Set up the GDT.
    GDT_Initialise();
@@ -30,14 +26,16 @@ void kmain(BootInfo_t BootInfoArgument) {
    // Set up paging to manage memory!
    Paging_Initialise(BootInfoArgument);
 
-   // If it DOES have an APIC, then enable it and find the Local APIC.
-   APIC_Initialise(BootInfoArgument.IOAPICAddress);
+   // Enable the APIC and find the Local APIC.
+   APIC_Initialise(BootInfoArgument->IOAPICAddress);
 
    // Set up the IDT, which also disables legacy PIC before we set up more modern APIC.
    IDT_Initialise();
 
    // Initialise the devices that we'll be using, i.e. NVMe drive.
-   PCI_InitialiseDevices(BootInfoArgument.ECAMBaseAddress);
+   PCI_InitialiseDevices(BootInfoArgument->ECAMBaseAddress);
+
+   // The FAT32 filesystem initialisation function is called by the available storage device.
 
    // Print welcome message.
    printf("Welcome to Brainrot26!");

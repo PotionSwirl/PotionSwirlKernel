@@ -21,10 +21,10 @@ static uint64_t FreePages = 0;
 
 // Everything that sets up paging when we start up
 
-void Paging_Initialise(BootInfo_t BootInfo) {
+void Paging_Initialise(BootInfo_t* BootInfo) {
 
     // Set up the bitmap used to keep track of our pages
-    MemoryBitmapInitialise(BootInfo.MemoryInfo);
+    MemoryBitmapInitialise(&BootInfo->MemoryInfo);
 
     // Set up PML4
     PML4 = Paging_AllocatePage();
@@ -36,8 +36,8 @@ void Paging_Initialise(BootInfo_t BootInfo) {
 
     void* PhysicalAddress;
 
-    EFI_MEMORY_DESCRIPTOR* CurrentMemoryDescriptor = (EFI_MEMORY_DESCRIPTOR*) BootInfo.MemoryInfo.MemoryMap;
-    EFI_MEMORY_DESCRIPTOR* LastMemoryDescriptor = (EFI_MEMORY_DESCRIPTOR*) (((uint8_t*) BootInfo.MemoryInfo.MemoryMap) + BootInfo.MemoryInfo.MemoryMapSize);
+    EFI_MEMORY_DESCRIPTOR* CurrentMemoryDescriptor = (EFI_MEMORY_DESCRIPTOR*) BootInfo->MemoryInfo.MemoryMap;
+    EFI_MEMORY_DESCRIPTOR* LastMemoryDescriptor = (EFI_MEMORY_DESCRIPTOR*) (((uint8_t*) BootInfo->MemoryInfo.MemoryMap) + BootInfo->MemoryInfo.MemoryMapSize);
 
     while (CurrentMemoryDescriptor < LastMemoryDescriptor) {
 
@@ -53,23 +53,23 @@ void Paging_Initialise(BootInfo_t BootInfo) {
 
         }
 
-        CurrentMemoryDescriptor = PAGING_GET_NEXT_EFI_MEMORY_DESCRIPTOR(CurrentMemoryDescriptor, BootInfo.MemoryInfo.DescriptorSize);
+        CurrentMemoryDescriptor = PAGING_GET_NEXT_EFI_MEMORY_DESCRIPTOR(CurrentMemoryDescriptor, BootInfo->MemoryInfo.DescriptorSize);
 
     }
 
     // Framebuffer
 
-    PhysicalAddress = (void*) Paging_PageAlignRoundDown(BootInfo.GraphicsOutputProtocol->Mode->FrameBufferBase);
-    Paging_MapMemory(PhysicalAddress, PhysicalAddress, PAGING_PAGE_PRESENT | PAGING_PAGE_WRITABLE, BytesToPages(BootInfo.GraphicsOutputProtocol->Mode->FrameBufferSize));
+    PhysicalAddress = (void*) Paging_PageAlignRoundDown(BootInfo->GraphicsOutputProtocol->Mode->FrameBufferBase);
+    Paging_MapMemory(PhysicalAddress, PhysicalAddress, PAGING_PAGE_PRESENT | PAGING_PAGE_WRITABLE, BytesToPages(BootInfo->GraphicsOutputProtocol->Mode->FrameBufferSize));
 
     // ECAM
 
-    PhysicalAddress = (void*) BootInfo.ECAMBaseAddress;
-    Paging_MapMemory(PhysicalAddress, PhysicalAddress, PAGING_PAGE_PRESENT | PAGING_PAGE_WRITABLE | PAGING_PAGE_WRITE_THROUGH | PAGING_PAGE_CACHE_DISABLE | PAGING_PAGE_NO_EXECUTE, BytesToPages(BootInfo.ECAMSize));
+    PhysicalAddress = (void*) BootInfo->ECAMBaseAddress;
+    Paging_MapMemory(PhysicalAddress, PhysicalAddress, PAGING_PAGE_PRESENT | PAGING_PAGE_WRITABLE | PAGING_PAGE_WRITE_THROUGH | PAGING_PAGE_CACHE_DISABLE | PAGING_PAGE_NO_EXECUTE, BytesToPages(BootInfo->ECAMSize));
 
     // APIC
 
-    PhysicalAddress = (void*) (uint64_t) BootInfo.IOAPICAddress;
+    PhysicalAddress = (void*) (uint64_t) BootInfo->IOAPICAddress;
     Paging_MapPage(PhysicalAddress, PhysicalAddress, PAGING_PAGE_PRESENT | PAGING_PAGE_WRITABLE | PAGING_PAGE_WRITE_THROUGH | PAGING_PAGE_CACHE_DISABLE | PAGING_PAGE_NO_EXECUTE);
 
     PhysicalAddress = (void*) APIC_GetBase();
@@ -175,7 +175,7 @@ void* Paging_AllocatePage() {
 }
 
 
-void FreePage(void* Address) {
+void Paging_FreePage(void* Address) {
 
     uint64_t Page;
     
@@ -186,7 +186,7 @@ void FreePage(void* Address) {
         Page = ((uint64_t) Address) / PAGING_PAGE_SIZE;
     }
 
-    // Check if it's really IS occupied just in case
+    // Check if it really IS occupied just in case
     if (MemoryBitmapTestPage(Page)) {
         MemoryBitmapClear(Page);
         FreePages++;
@@ -197,12 +197,12 @@ void FreePage(void* Address) {
 
 // Memory bitmap helpers
 
-void MemoryBitmapInitialise(MemoryInfo_t MemoryInfo) {
+void MemoryBitmapInitialise(MemoryInfo_t* MemoryInfo) {
 
     // Find the size the bitmap should be, as well as highest memory address
 
-    EFI_MEMORY_DESCRIPTOR* FirstMemoryDescriptor = (EFI_MEMORY_DESCRIPTOR*) MemoryInfo.MemoryMap;
-    EFI_MEMORY_DESCRIPTOR* LastMemoryDescriptor = (EFI_MEMORY_DESCRIPTOR*) (((uint8_t*) MemoryInfo.MemoryMap) + MemoryInfo.MemoryMapSize);
+    EFI_MEMORY_DESCRIPTOR* FirstMemoryDescriptor = (EFI_MEMORY_DESCRIPTOR*) MemoryInfo->MemoryMap;
+    EFI_MEMORY_DESCRIPTOR* LastMemoryDescriptor = (EFI_MEMORY_DESCRIPTOR*) (((uint8_t*) MemoryInfo->MemoryMap) + MemoryInfo->MemoryMapSize);
 
     EFI_MEMORY_DESCRIPTOR* CurrentMemoryDescriptor = FirstMemoryDescriptor;
 
@@ -214,7 +214,7 @@ void MemoryBitmapInitialise(MemoryInfo_t MemoryInfo) {
             UsableMemory += CurrentMemoryDescriptor->NumberOfPages * PAGING_PAGE_SIZE;
         }
 
-        CurrentMemoryDescriptor = PAGING_GET_NEXT_EFI_MEMORY_DESCRIPTOR(CurrentMemoryDescriptor, MemoryInfo.DescriptorSize);
+        CurrentMemoryDescriptor = PAGING_GET_NEXT_EFI_MEMORY_DESCRIPTOR(CurrentMemoryDescriptor, MemoryInfo->DescriptorSize);
 
     }
 
@@ -237,7 +237,7 @@ void MemoryBitmapInitialise(MemoryInfo_t MemoryInfo) {
 
         }
 
-        CurrentMemoryDescriptor = PAGING_GET_NEXT_EFI_MEMORY_DESCRIPTOR(CurrentMemoryDescriptor, MemoryInfo.DescriptorSize);
+        CurrentMemoryDescriptor = PAGING_GET_NEXT_EFI_MEMORY_DESCRIPTOR(CurrentMemoryDescriptor, MemoryInfo->DescriptorSize);
 
     }
 
@@ -264,7 +264,7 @@ void MemoryBitmapInitialise(MemoryInfo_t MemoryInfo) {
 
         }
 
-        CurrentMemoryDescriptor = PAGING_GET_NEXT_EFI_MEMORY_DESCRIPTOR(CurrentMemoryDescriptor, MemoryInfo.DescriptorSize);
+        CurrentMemoryDescriptor = PAGING_GET_NEXT_EFI_MEMORY_DESCRIPTOR(CurrentMemoryDescriptor, MemoryInfo->DescriptorSize);
 
     }
 
