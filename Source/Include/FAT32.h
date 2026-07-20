@@ -5,6 +5,10 @@
 #define FAT32_CLUSTER_ENTRY_SIZE                   4
 #define FAT32_EOF                                  0x0FFFFFF8
 #define FAT32_DIRECTORY_ENTRIES_IN_CLUSTER_FREE   '\0'
+#define FAT32_LFN_ATTRIBUTE                        0x0F
+#define FAT32_SFN_ATTRIBUTE                        0x20
+#define FAT32_DIRECTORY_ATTRIBUTE                  0x10
+#define FAT32_CHARACTERS_HELD_BY_LFN_ENTRY         13
 
 // GPT header in LBA 1 of any storage device that's GPT-formatted
 typedef struct __attribute__((packed)) {
@@ -83,11 +87,22 @@ typedef struct __attribute__((packed)) {
     uint32_t FileSize;          // 32-bit DWORD holding file size in bytes
 } FAT32_DirectoryEntry_t;
 
+typedef struct __attribute__((packed)) {
+    uint8_t  SequenceNum;       // Sequence number and flags (e.g., 0x41)
+    uint16_t NamePart1[5];      // Characters 1-5 of the file name (UTF-16)
+    uint8_t  Attributes;        // Always 0x0F (ATTR_LONG_NAME)
+    uint8_t  Type;              // Long entry type, always 0x00
+    uint8_t  Checksum;          // Checksum of the associated short file name
+    uint16_t NamePart2[6];      // Characters 6-11 of the file name (UTF-16)
+    uint16_t StartingCluster;   // Always 0x0000 for compatibility
+    uint16_t NamePart3[2];      // Characters 12-13 of the file name (UTF-16)
+} FAT32_LFNDirectoryEntry_t;
+
 extern void (*FAT32_DriveRead)(uint64_t StartingLBA, uint16_t NumberOfBlocks, void* PageAlignedBuffer);
 void FAT32_Initialise(void (*FAT32_DriveReadArgument), uint64_t BytesPerBlock);
 uint32_t FAT32_ClusterToSector(uint32_t Cluster);
 uint32_t FAT32_GetNextCluster(uint32_t Cluster);
-FAT32_DirectoryEntry_t* FAT32_FindInDirectory(uint32_t DirectoryFirstCluster, const char* FAT32FormattedName);
+FAT32_DirectoryEntry_t* FAT32_FindInDirectory(uint32_t DirectoryFirstCluster, const char* RegularFormattedName);
 void FAT32_FormatFileName(const char* FileName, char* Destination);
 void FAT32_FormatFolderName(const char* FolderName, char* Destination);
 FAT32_BPB_t* FAT32_GetBPB();

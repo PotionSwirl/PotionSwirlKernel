@@ -45,7 +45,6 @@ USB:
 	sudo mount -t drvfs D: /mnt/d
 	sudo losetup -Pf Build/NVME.img
 	sudo mount /dev/loop0p1 /tmp/NVME
-	sudo rm -f /tmp/NVME/NvVars
 	cp -r /tmp/NVME/. /mnt/d/
 	sudo umount /tmp/NVME
 	sudo losetup -d /dev/loop0

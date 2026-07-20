@@ -131,7 +131,40 @@ uint32_t FAT32_GetNextCluster(uint32_t Cluster) {
 
 // Can be used to return the directory entry of either a file or folder (name must be given in 8.3 format)
 
-FAT32_DirectoryEntry_t* FAT32_FindInDirectory(uint32_t DirectoryFirstCluster, const char* FAT32FormattedName) {
+FAT32_DirectoryEntry_t* FAT32_FindInDirectory(uint32_t DirectoryFirstCluster, const char* RegularFormattedName) {
+
+    // RegularFormattedName = with dots and varied casing
+
+    /* If the file or folder name is 11 characters or under, format it to capital 8.3 standard and will
+       be compared with the entry */
+    // If it's longer than 11 characters, it's a long file/folder name and will be compared as it is
+
+    char FAT32FormattedName[11];
+
+    // If it's not a long name:
+
+    if ((!(Libraries_StringContains(RegularFormattedName, '.')) && strlen(RegularFormattedName) <= 11)
+        || ((Libraries_StringContains(RegularFormattedName, '.')) && strlen(RegularFormattedName) <= 12))
+
+    {
+
+        // Format according to whether it's a file or folder name
+
+        if (Libraries_StringContains(RegularFormattedName, '.')) {
+            FAT32_FormatFileName(RegularFormattedName, FAT32FormattedName);
+        } else {
+            FAT32_FormatFolderName(RegularFormattedName, FAT32FormattedName);
+        }
+
+    }
+
+    // So therefore, if it's a long name, we'll ignore the FAT32FormattedName and just use RegularFormattedName when comparing
+
+    // Now, scan the directory entries
+
+    // Have a buffer to construct a long name if the file has LFN entries - otherwise, this goes unused
+
+    char ConstructedLongName[255];     // Max long name length allowed by FAT32
 
     // Work with one cluster of directory entries at a time
 
@@ -146,21 +179,114 @@ FAT32_DirectoryEntry_t* FAT32_FindInDirectory(uint32_t DirectoryFirstCluster, co
         uint32_t StartingSector = FAT32_ClusterToSector(CurrentCluster);
         FAT32_DriveRead(StartingSector, BPB->SectorsPerCluster, DirectoryEntries);
 
+        // If we hit an SFN entry and this boolean is set, it means we hit the end of an LFN chain
+        // We can safely generate a new boolean for each cluster an LFN chain always sits in one cluster
+
+        bool LFNChainInProgress = false;
+        uint32_t NumberOfEntriesInLFNChainToProcess;
+
         for (uint32_t i = 0; i < EntriesPerCluster; i++) {
 
-            FAT32_DirectoryEntry_t* DirectoryEntry = &DirectoryEntries[i];
+            FAT32_DirectoryEntry_t* DirectoryEntrySFNFormat = &DirectoryEntries[i];
+            FAT32_LFNDirectoryEntry_t* DirectoryEntryLFNFormat = (FAT32_LFNDirectoryEntry_t*) &DirectoryEntries[i];
 
-            if (DirectoryEntry->FileName[0] == FAT32_DIRECTORY_ENTRIES_IN_CLUSTER_FREE) break;
+            if (DirectoryEntrySFNFormat->FileName[0] == FAT32_DIRECTORY_ENTRIES_IN_CLUSTER_FREE) break;
 
-            if (memcmp(DirectoryEntry->FileName, FAT32FormattedName, 11) == 0) {
+            // This will only run on a special LFN (long file name) file
 
-                // If we've found the file or folder, return its directory entry
-                /* The entire page containing this specific entry is kept
-                  - it is up to the function user to do what they want with it. */
+            /* We piece together the long file name from the LFN entries, and if it matches 
+               RegularFormattedName, we don't need to check the shortened SFN name and can
+               simply start reading clusters from the SFN entry. */
 
-                return DirectoryEntry;
+            if (DirectoryEntrySFNFormat->Attribute == FAT32_LFN_ATTRIBUTE) {
+
+                // If bit 0x40 is set in the SequenceNum, this is the start of a new LFN chain (last entry)
+                // Mask out the flag to determine how many LFN entries this chain has
+
+                if (DirectoryEntryLFNFormat->SequenceNum & 0x40) {
+                    LFNChainInProgress = true;
+                    NumberOfEntriesInLFNChainToProcess = DirectoryEntryLFNFormat->SequenceNum & 0x1F;
+                }
+
+                // If we're on an LFN entry, an LFN chain is most definitely in progress
+                // Copy the name characters from this entry into ConstructedLongName
+                
+                /* As the first LFN in the chain (with that bit set) contains the last characters
+                   of the name. The LFN entries are backwards, but name parts 1, 2 and 3 are
+                   in ORDER. Huh. 
+                   
+                   Ok so let's go name part 1, 2 and 3 in order then, but start
+                   at the last 13-character chunk of the buffer as each LFN entry can hold 13
+                   characters. 
+                   
+                   We also need to remember that we copy every SECOND byte because
+                   the long names that the drive stores are long strings (Unicode). We want to
+                   get this to ASCII.
+                   
+                   Let's also decrement NumberofEntriesInLFNChainToProcess each time to help us
+                   decide which 13-character chunk we're writing to. */
+
+                // Decrement first as we're going to the BEGINNING of a 13-character chunk.
+
+                NumberOfEntriesInLFNChainToProcess--;
+
+                uint32_t CurrentBufferIndex = NumberOfEntriesInLFNChainToProcess * FAT32_CHARACTERS_HELD_BY_LFN_ENTRY;
+
+                // Go through each name part - 0x00 = end of name
+
+                // NamePart1
+
+                for (int i = 0; i < 5; i++) {
+                    if (DirectoryEntryLFNFormat->NamePart1[i] == 0) break;
+                    ConstructedLongName[CurrentBufferIndex++] = (char) DirectoryEntryLFNFormat->NamePart1[i];
+                }
+
+                // NamePart2
+
+                for (int i = 0; i < 6; i++) {
+                    if (DirectoryEntryLFNFormat->NamePart1[i] == 0) break;
+                    ConstructedLongName[CurrentBufferIndex++] = (char) DirectoryEntryLFNFormat->NamePart2[i];
+                }
+
+                // NamePart3
+
+                for (int i = 0; i < 2; i++) {
+                    if (DirectoryEntryLFNFormat->NamePart1[i] == 0) break;
+                    ConstructedLongName[CurrentBufferIndex++] = (char) DirectoryEntryLFNFormat->NamePart3[i];
+                }
 
             }
+
+            // If it's a regular SFN file/folder with a short name OR the SFN entry of a successfully name-matched LFN chain: return the entry
+
+            if (DirectoryEntrySFNFormat->Attribute == FAT32_SFN_ATTRIBUTE  || DirectoryEntrySFNFormat->Attribute == FAT32_DIRECTORY_ATTRIBUTE) {
+
+                /* If there was an LFN chain before this SFN, compare the ConstructedLongName to
+                   RegularFormattedName. Also, turn the LFNChainInProgress boolean off as, if this
+                   SFN follows an LFN chain, that LFN chain has now come to an end. */
+
+                if (LFNChainInProgress) {
+
+                    if (memcmp(ConstructedLongName, RegularFormattedName, strlen(RegularFormattedName)) == 0) {
+                        return DirectoryEntrySFNFormat;
+                    }
+
+                    LFNChainInProgress = false;
+
+                }
+
+                // If this SFN wasn't the end of an LFN chain, does it match the FAT32FormattedName if that was built?
+
+                if (memcmp(DirectoryEntrySFNFormat->FileName, FAT32FormattedName, 11) == 0) {
+                    return DirectoryEntrySFNFormat;
+                }
+
+            }
+
+            // If we've found the file or folder, return its directory entry
+
+            /* The entire page containing this specific entry is kept switched on
+                - it is up to the function user to do what they want with it. */
 
         }
 

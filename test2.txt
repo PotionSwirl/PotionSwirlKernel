@@ -1,2 +1,1 @@
-This is in the root directory!
-Yay!
+This is a short file name inside a folder with a long name.

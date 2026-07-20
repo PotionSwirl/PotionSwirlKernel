@@ -205,6 +205,23 @@ int strlen(const char *s) {
 }
 
 
+bool Libraries_StringContains(const char* String, char Character) {
+
+    while (*String) {
+
+        if (*String == Character) {
+            return true;
+        }
+
+        String++;
+
+    }
+
+    return false;
+
+}
+
+
 /************ FILES ************/
 
 
@@ -245,21 +262,8 @@ FILE* fopen(const char* FilePath) {
     FAT32_DirectoryEntry_t* DirectoryEntry;
 
     for (int i = 0; i < NumberOfPathTokens; i++) {
-
-        // FAT32-format the file or folder name accordingly
-        // If it's NOT the last token, it must be a folder name
-
-        char FAT32FormattedName[11];
-
-        if (i < NumberOfPathTokens - 1) {
-            FAT32_FormatFolderName(PathTokens[i], FAT32FormattedName);
-        } else {
-            FAT32_FormatFileName(PathTokens[i], FAT32FormattedName);
-        }
-        
-        DirectoryEntry = FAT32_FindInDirectory(CurrentDirectoryFirstCluster, FAT32FormattedName);
+        DirectoryEntry = FAT32_FindInDirectory(CurrentDirectoryFirstCluster, PathTokens[i]);
         CurrentDirectoryFirstCluster = (DirectoryEntry->FirstClusterHigh << 16) | DirectoryEntry->FirstClusterLow;
-
     }
 
     // This will automatically be NULL if the entry couldn't be found

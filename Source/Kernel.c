@@ -40,16 +40,6 @@ void kmain(BootInfo_t* BootInfoArgument) {
    // Print welcome message.
    printf("Welcome to Brainrot26!\n");
 
-   FILE* fptr = fopen("folder\\test.txt");
-   char* test;
-   fread(test, fptr);
-
-   for (uint32_t i = 0; i < fptr->FileSize; i++) {
-      putc(test[i]);
-   }
-
-   fclose(fptr);
-
    while(true);
 
 }

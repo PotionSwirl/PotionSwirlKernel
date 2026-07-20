@@ -23,6 +23,7 @@ int memcmp(const void* Source1, const void* Source2, uint32_t Count);
 
 int strcmp(const char* s1, const char *s2);
 int strlen(const char *s);
+bool Libraries_StringContains(const char* String, char Character);
 
 
 /************ FILES ************/
