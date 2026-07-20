@@ -29,7 +29,7 @@ static uint16_t MQES;
 static uint8_t DSTRD;
 static uint32_t IOSQDoorbellRegisterOffset;
 
-/* After writing an CQ entry, NVMe also writes a phase bit and flips
+/* After writing a CQ entry, NVMe also writes a phase bit and flips
    when the CQ wraps around. The host (us) must maintain our own phase
    bit and also flip it upon wrap-around, and if our bit matches with
    NVMe's bit, it means we're reading new entries, not old ones that

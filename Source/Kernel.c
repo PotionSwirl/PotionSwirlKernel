@@ -35,10 +35,20 @@ void kmain(BootInfo_t* BootInfoArgument) {
    // Initialise the devices that we'll be using, i.e. NVMe drive.
    PCI_InitialiseDevices(BootInfoArgument->ECAMBaseAddress);
 
-   // The FAT32 filesystem initialisation function is called by the available storage device.
+   // The FAT32 filesystem initialisation function is called by the available storage device initialisation function.
 
    // Print welcome message.
-   printf("Welcome to Brainrot26!");
+   printf("Welcome to Brainrot26!\n");
+
+   FILE* fptr = fopen("folder\\test.txt");
+   char* test;
+   fread(test, fptr);
+
+   for (uint32_t i = 0; i < fptr->FileSize; i++) {
+      putc(test[i]);
+   }
+
+   fclose(fptr);
 
    while(true);
 

@@ -10,6 +10,8 @@
 void (*FAT32_DriveRead)(uint64_t StartingLBA, uint16_t NumberOfBlocks, void* PageAlignedBuffer);
 
 FAT32_BPB_t* BPB;
+static uint32_t DataStartSector;
+static uint32_t FATStartSector;
 
 
 void FAT32_Initialise(void (*FAT32_DriveReadArgument), uint64_t BytesPerBlock) {
@@ -44,12 +46,14 @@ void FAT32_Initialise(void (*FAT32_DriveReadArgument), uint64_t BytesPerBlock) {
 
     uint8_t NullGUID[16] = {0};
 
+    uint64_t BlocksPerPage = PAGING_PAGE_SIZE / BytesPerBlock;
+
 
     // Read as many blocks at a time as we can fit into one 4 KiB page, then look through the entries one by one in that page
     
-    for (uint64_t i = 0; i < PartitionEntriesBlocks; i += PAGING_PAGE_SIZE / BytesPerBlock) {
+    for (uint64_t i = 0; i < PartitionEntriesBlocks; i += BlocksPerPage) {
 
-        FAT32_DriveRead(GPTHeader->PartitionEntriesLBA + i, PAGING_PAGE_SIZE / BytesPerBlock, GPTPartitionEntries);
+        FAT32_DriveRead(GPTHeader->PartitionEntriesLBA + i, BlocksPerPage, GPTPartitionEntries);
 
         for (uint64_t j = 0; j < BytesPerBlock / GPTHeader->SizeOfPartitionEntry; j++) {
 
@@ -65,8 +69,20 @@ void FAT32_Initialise(void (*FAT32_DriveReadArgument), uint64_t BytesPerBlock) {
                 memset(BPB, 0, PAGING_PAGE_SIZE);
 
                 FAT32_DriveRead(GPTPartitionEntries[j].StartingLBA, 1, BPB);
+
+                // The FAT begins after the reserved sectors
+                // Calculate DataStart, which we'll need for our cluster calculations
+                // Also, the reserved sectors start from the beginning of the FAT32 partition, not entire drive
+
+                FATStartSector = GPTPartitionEntries[j].StartingLBA + BPB->ReservedSectors;
+                DataStartSector = FATStartSector + BPB->NumberOfFATS * BPB->SectorsPerFAT32;
                 
-                break;
+                // We don't need these anymore
+
+                Paging_FreePage(GPTPartitionEntries);
+                Paging_FreePage(GPTHeader);
+                
+                return;
 
             }
 
@@ -74,12 +90,141 @@ void FAT32_Initialise(void (*FAT32_DriveReadArgument), uint64_t BytesPerBlock) {
 
     }
 
-    // We don't need these anymore
+}
 
-    Paging_FreePage(GPTPartitionEntries);
-    Paging_FreePage(GPTHeader);
+
+// As sectors 0 and 1 are reserved in the FAT32 partition, clusters count starting from 2
+// Hence, our DataStartSector, which occurs after the reserved sectors as calculated above
+
+uint32_t FAT32_ClusterToSector(uint32_t Cluster) {
+    return DataStartSector + (Cluster - 2) * BPB->SectorsPerCluster;
+}
+
+
+uint32_t FAT32_GetNextCluster(uint32_t Cluster) {
+
+    // Find the cluster entry (a uint32_t) of the given cluster in the FAT
+    // Its entry will help us get the NEXT cluster
+    // Its then a separate job to read data from the sectors of whatever cluster we're working with
+
+    uint32_t CurrentClusterEntrySector = FATStartSector + (Cluster * FAT32_CLUSTER_ENTRY_SIZE / BPB->BytesPerSector);
+    uint32_t CurrentClusterEntryOffset = Cluster * FAT32_CLUSTER_ENTRY_SIZE % BPB->BytesPerSector;
+
+    // Read the cluster entry (separate from the cluster file data)
+    // A cluster entry is well within a sector as there are multiple cluster entries in one sector
+
+    void* Buffer = Paging_AllocatePage();
+    FAT32_DriveRead(CurrentClusterEntrySector, 1, Buffer);
+
+    // Get the contents of the cluster entry where they actually are
+    // Cast the buffer to a uint8_t* so that adding to it increments it in bytes
+
+    uint32_t* CurrentClusterEntryAddress = (uint32_t*) (((uint8_t*) Buffer) + CurrentClusterEntryOffset);
+    Paging_FreePage(Buffer);
+
+    // Only the lower 28 bits of the entry contain the actual number of the next cluster
+
+    return *CurrentClusterEntryAddress & 0x0FFFFFFF;
 
 }
 
 
+// Can be used to return the directory entry of either a file or folder (name must be given in 8.3 format)
 
+FAT32_DirectoryEntry_t* FAT32_FindInDirectory(uint32_t DirectoryFirstCluster, const char* FAT32FormattedName) {
+
+    // Work with one cluster of directory entries at a time
+
+    uint32_t EntriesPerCluster = BPB->SectorsPerCluster * BPB->BytesPerSector / sizeof(FAT32_DirectoryEntry_t);
+    uint32_t CurrentCluster = DirectoryFirstCluster;
+
+    FAT32_DirectoryEntry_t* DirectoryEntries = Paging_AllocatePage();
+    memset(DirectoryEntries, 0, PAGING_PAGE_SIZE);
+
+    while (CurrentCluster < FAT32_EOF) {
+
+        uint32_t StartingSector = FAT32_ClusterToSector(CurrentCluster);
+        FAT32_DriveRead(StartingSector, BPB->SectorsPerCluster, DirectoryEntries);
+
+        for (uint32_t i = 0; i < EntriesPerCluster; i++) {
+
+            FAT32_DirectoryEntry_t* DirectoryEntry = &DirectoryEntries[i];
+
+            if (DirectoryEntry->FileName[0] == FAT32_DIRECTORY_ENTRIES_IN_CLUSTER_FREE) break;
+
+            if (memcmp(DirectoryEntry->FileName, FAT32FormattedName, 11) == 0) {
+
+                // If we've found the file or folder, return its directory entry
+                /* The entire page containing this specific entry is kept
+                  - it is up to the function user to do what they want with it. */
+
+                return DirectoryEntry;
+
+            }
+
+        }
+
+        CurrentCluster = FAT32_GetNextCluster(CurrentCluster);
+
+    }
+
+    // Otherwise, if it couldn't be found, don't maintain the page and return NULL
+
+    Paging_FreePage(DirectoryEntries);
+
+    return NULL;
+
+}
+
+
+void FAT32_FormatFileName(const char* FileName, char* Destination) {
+
+    // Format the FileName into the 8.3 FAT32 format
+    // Leave a space at the end as strangely the match only works with that...
+
+    char FormattedFileName[11];
+    memset(FormattedFileName, ' ', 11);
+
+    // To convert a char to uppercase, subtract 32
+
+    for (int i = 0; i < strlen(FileName) - 3 && i < 8; i++) {
+        if (FileName[i] >= 'a' && FileName[i] <= 'z') {
+            FormattedFileName[i] = FileName[i] - 32;
+        } else if (FileName[i] != '.') {
+            FormattedFileName[i] = FileName[i];
+        }
+    }
+
+    for (int i = 0; i < 3; i++) {
+        if (FileName[strlen(FileName) - i - 1] >= 'a' && FileName[strlen(FileName) - i - 1] <= 'z') {
+            FormattedFileName[11 - i - 1] = FileName[strlen(FileName) - i - 1] - 32;
+        } else if (FileName[strlen(FileName) - i - 1] != '.') {
+            FormattedFileName[11 - i - 1] = FileName[strlen(FileName) - i - 1];
+        }
+    }
+
+    memcpy(Destination, FormattedFileName, 11);
+
+}
+
+
+// This simply capitalises the entire name, then pads it with spaces to 11 characters
+
+void FAT32_FormatFolderName(const char* FolderName, char* Destination) {
+
+    memset(Destination, ' ', 11);
+
+    for (int i = 0; i < strlen(FolderName); i++) {
+        if (FolderName[i] >= 'a' && FolderName[i] <= 'z') {
+            Destination[i] = FolderName[i] - 32;
+        } else {
+            Destination[i] = FolderName[i];
+        }
+    }
+    
+}
+
+
+FAT32_BPB_t* FAT32_GetBPB() {
+    return BPB;
+}

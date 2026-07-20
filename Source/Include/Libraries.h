@@ -1,6 +1,7 @@
 #pragma once
 
 #include <stdint.h>
+#include "FAT32.h"
 
 /************ PRINTING ************/
 
@@ -16,3 +17,19 @@ void printf(const char* fmt, ...);
 void memset(void* Object, char Value, uint32_t Count);
 void memcpy(void* Destination, const void* Source, uint32_t Count);
 int memcmp(const void* Source1, const void* Source2, uint32_t Count);
+
+
+/************ STRING ************/
+
+int strcmp(const char* s1, const char *s2);
+int strlen(const char *s);
+
+
+/************ FILES ************/
+
+typedef FAT32_DirectoryEntry_t FILE;
+
+
+FILE* fopen(const char* FilePath);
+void fclose(FILE* FilePointer);
+void fread(void* Buffer, FILE* FilePointer);

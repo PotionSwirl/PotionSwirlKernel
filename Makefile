@@ -7,7 +7,7 @@ LD = ld
 LD_FLAGS = -nostdlib -z max-page-size=0x1000
 LD_FLAGS_BOOT = -nostdlib -shared -Wl,-znocombreloc -Wl,-Bsymbolic -Wl,-z,notext -Wl,-T,/usr/lib/elf_x86_64_efi.lds /usr/lib/crt0-efi-x86_64.o
 
-all: BOOT Find Kernel.elf Image Run
+all: BOOT Find Kernel.elf Mount CopyFiles Eject Run
 
 # Find every C and ASM file in Source folder
 C_SOURCES := $(shell find Source -name "*.c" ! -name "Bootx64.c")
@@ -51,12 +51,16 @@ USB:
 	sudo losetup -d /dev/loop0
 	sudo umount /mnt/d
 
-Image:
+CopyFiles:
+	sudo cp Build/Bootx64.efi /tmp/NVME/EFI/Boot/
+	sudo cp Build/Kernel.elf /tmp/NVME/
+
+Mount:
 	sudo losetup -Pf Build/NVME.img
 	mkdir -p /tmp/NVME
 	sudo mount /dev/loop0p1 /tmp/NVME
-	sudo cp Build/Bootx64.efi /tmp/NVME/EFI/Boot/
-	sudo cp Build/Kernel.elf /tmp/NVME/
+
+Eject:
 	sudo umount /tmp/NVME
 	sudo losetup -d /dev/loop0
 

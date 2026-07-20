@@ -1,4 +1,10 @@
+#pragma once
+
 #include <stdint.h>
+
+#define FAT32_CLUSTER_ENTRY_SIZE                   4
+#define FAT32_EOF                                  0x0FFFFFF8
+#define FAT32_DIRECTORY_ENTRIES_IN_CLUSTER_FREE   '\0'
 
 // GPT header in LBA 1 of any storage device that's GPT-formatted
 typedef struct __attribute__((packed)) {
@@ -38,13 +44,13 @@ typedef struct __attribute__((packed)) {
     uint16_t RootEntryCount;
     uint16_t TotalSectors16;
     uint8_t  MediaDescriptor;
-    uint16_t FatSize16;
+    uint16_t FATSize16;
     uint16_t SectorsPerTrack;
     uint16_t NumberOfHeads;
     uint32_t HiddenSectors;
     uint32_t TotalSectors32;
     // FAT32 Extended Boot Record (EBR)
-    uint32_t SectorsPerFat32;
+    uint32_t SectorsPerFAT32;
     uint16_t ExtendedFlags;
     uint16_t FileSystemVersion;
     uint32_t RootCluster;
@@ -62,5 +68,26 @@ typedef struct __attribute__((packed)) {
     uint16_t BootSectorSignature; // 0xAA55
 } FAT32_BPB_t;
 
+typedef struct __attribute__((packed)) {
+    char     FileName[11];      // 8 chars name, 3 chars extension
+    uint8_t  Attribute;         // File attributes (Read Only, Hidden, System, etc.)
+    uint8_t  NTReserved;        // Reserved for Use by Windows NT
+    uint8_t  CreationTimeTenth; // Millisecond stamp at file creation
+    uint16_t CreationTime;      // Time file was created
+    uint16_t CreationDate;      // Date file was created
+    uint16_t LastAccessDate;    // Last access date
+    uint16_t FirstClusterHigh;  // High 16 bits of this entry's first cluster
+    uint16_t WriteTime;         // Time of last write
+    uint16_t WriteDate;         // Date of last write
+    uint16_t FirstClusterLow;   // Low 16 bits of this entry's first cluster
+    uint32_t FileSize;          // 32-bit DWORD holding file size in bytes
+} FAT32_DirectoryEntry_t;
+
 extern void (*FAT32_DriveRead)(uint64_t StartingLBA, uint16_t NumberOfBlocks, void* PageAlignedBuffer);
 void FAT32_Initialise(void (*FAT32_DriveReadArgument), uint64_t BytesPerBlock);
+uint32_t FAT32_ClusterToSector(uint32_t Cluster);
+uint32_t FAT32_GetNextCluster(uint32_t Cluster);
+FAT32_DirectoryEntry_t* FAT32_FindInDirectory(uint32_t DirectoryFirstCluster, const char* FAT32FormattedName);
+void FAT32_FormatFileName(const char* FileName, char* Destination);
+void FAT32_FormatFolderName(const char* FolderName, char* Destination);
+FAT32_BPB_t* FAT32_GetBPB();

@@ -1,7 +1,10 @@
 #include <stdint.h>
 #include <stdarg.h>
 #include <stdbool.h>
+#include "Include/Libraries.h"
 #include "Include/Graphics.h"
+#include "Include/FAT32.h"
+#include "Include/Paging.h"
 
 /************ PRINTING ************/
 
@@ -172,5 +175,143 @@ int memcmp(const void* Source1, const void* Source2, uint32_t Count) {
     }
 
     return 0;
+
+}
+
+
+/************ STRING ************/
+
+int strcmp(const char* s1, const char *s2) {
+
+    while (*s1 && (*s1 == *s2)) {
+        s1++;
+        s2++;
+    };
+
+    return (uint8_t) *s1 - (uint8_t) *s2;
+
+}
+
+
+int strlen(const char *s) {
+    int retval = 0;
+
+    while(*s != '\0') {
+        retval++;
+        s++;
+    }
+
+    return retval;
+}
+
+
+/************ FILES ************/
+
+
+FILE* fopen(const char* FilePath) {
+
+    // We don't want to mess with the user's string!
+    // Also - COPY ONE CHARACTER AHEAD - IT'S THE NULL STRING TERMINATOR!!
+
+    char FilePathCopy[strlen(FilePath)];
+    memcpy(FilePathCopy, FilePath, strlen(FilePath) + 1);
+
+    // If the path has slashes, tokenize it into its separate folder names
+
+    char* PathTokens[50];
+
+    // The first path token begins at the beginning of the FilePath string
+
+    PathTokens[0] = (char*) FilePathCopy;
+
+    int NumberOfPathTokens = 1;
+
+    for (int i = 0; i < strlen(FilePathCopy); i++) {
+        if (FilePathCopy[i] == '/' || FilePathCopy[i] == '\\') {
+            FilePathCopy[i] = '\0';
+            PathTokens[NumberOfPathTokens++] = &FilePathCopy[i + 1];
+        }
+    }
+
+    // Memcpying from before left a null at the end of the last token - we will need nulls for comparing later
+
+    // Search through the directories represented by the tokens to find the final file entry
+    // Or if the file name is the only token, simply fetch the entry from the root directory
+
+    FAT32_BPB_t* BPB = FAT32_GetBPB();
+    
+    uint32_t CurrentDirectoryFirstCluster = BPB->RootCluster;
+
+    FAT32_DirectoryEntry_t* DirectoryEntry;
+
+    for (int i = 0; i < NumberOfPathTokens; i++) {
+
+        // FAT32-format the file or folder name accordingly
+        // If it's NOT the last token, it must be a folder name
+
+        char FAT32FormattedName[11];
+
+        if (i < NumberOfPathTokens - 1) {
+            FAT32_FormatFolderName(PathTokens[i], FAT32FormattedName);
+        } else {
+            FAT32_FormatFileName(PathTokens[i], FAT32FormattedName);
+        }
+        
+        DirectoryEntry = FAT32_FindInDirectory(CurrentDirectoryFirstCluster, FAT32FormattedName);
+        CurrentDirectoryFirstCluster = (DirectoryEntry->FirstClusterHigh << 16) | DirectoryEntry->FirstClusterLow;
+
+    }
+
+    // This will automatically be NULL if the entry couldn't be found
+
+    FILE* FilePointer = (FILE*) DirectoryEntry;
+    return FilePointer;
+    
+}
+
+
+void fclose(FILE* FilePointer) {
+
+    /* This will free the page containing the cluster of directory entries in which
+       the file's directory entry was found. */
+
+    Paging_FreePage((void*) Paging_PageAlignRoundDown((uint64_t) FilePointer));
+
+}
+
+
+void fread(void* Buffer, FILE* FilePointer) {
+
+    // Read the file to the buffer
+    // Remember - FILE & FAT32_DirectoryEntry_t are the same type
+
+    FAT32_DirectoryEntry_t* DirectoryEntry = FilePointer;
+    FAT32_BPB_t* BPB = FAT32_GetBPB();
+
+    /* We'll pass in a page-aligned buffer to the drive as it may require it (NVMe does), 
+       copy the contents into the requested buffer, then free the page. */
+
+    // We'll cast this temporary buffer to uint8_t* so that we can increment it in bytes
+
+    void* DriveBuffer = Paging_AllocatePage();
+    uint8_t* DriveBufferCursor = DriveBuffer;
+    memset(DriveBuffer, 0, PAGING_PAGE_SIZE);
+
+    uint32_t CurrentCluster = (DirectoryEntry->FirstClusterHigh << 16) | DirectoryEntry->FirstClusterLow;
+
+    while (CurrentCluster < FAT32_EOF) {
+        uint32_t StartSector = FAT32_ClusterToSector(CurrentCluster);
+        FAT32_DriveRead(StartSector, BPB->SectorsPerCluster, DriveBufferCursor);
+        DriveBufferCursor += BPB->SectorsPerCluster * BPB->BytesPerSector;
+        CurrentCluster = FAT32_GetNextCluster(CurrentCluster);
+    }
+
+    // Copy the temporary buffer to the requested one
+
+    memcpy(Buffer, DriveBuffer, DirectoryEntry->FileSize);
+
+    // And free the page holding the temporary buffer
+
+    Paging_FreePage(DriveBuffer);
 
 }
