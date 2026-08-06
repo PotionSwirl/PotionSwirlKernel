@@ -188,7 +188,4 @@ void NVMe_ReEnableController();
 void NVMe_InitialiseIOQueues();
 void NVMe_CreateIOSQ();
 void NVMe_CreateIOCQ();
-uint32_t NVMe_Read32Bit(uint64_t Offset);
-void NVMe_Write32Bit(uint64_t Offset, uint32_t Value);
-uint64_t NVMe_Read64Bit(uint64_t Offset);
-void NVMe_Write64Bit(uint64_t Offset, uint64_t Value);
+void NVMe_IdentifyNamespace();

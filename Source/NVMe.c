@@ -1,5 +1,6 @@
 #include <stdint.h>
 #include "Include/NVMe.h"
+#include "Include/PCI.h"
 #include "Include/Libraries.h"
 #include "Include/Paging.h"
 #include "Include/FAT32.h"
@@ -44,48 +45,34 @@ static uint8_t IOCQPhaseBit = 1;
 static uint64_t AdminCommandID = 1;
 static uint64_t IOCommandID = 1;
 
+// Information to pass onto FAT32
+static uint64_t BytesPerBlock;
+
 
 void NVMe_Initialise(volatile uint8_t* NVMeBAR0Argument) {
 
     // Initialise globals
 
     NVMeBAR0 = NVMeBAR0Argument;
-    uint64_t CAP = NVMe_Read64Bit(NVME_CAP_REGISTER_OFFSET);
+    uint64_t CAP = PCI_Read64Bit(NVMeBAR0, NVME_CAP_REGISTER_OFFSET);
     MQES = CAP & 0xFFFF;  // Lower 16 bits of CAP
     DSTRD = (CAP >> 32) & 0xF;
 
-    // Set up the controller
+    // Set up the controller's DMA ring buffers
 
     NVMe_DisableController();
+
     NVMe_InitialiseAdminQueues();
+
     NVMe_ReEnableController();
 
     // We must set up I/O queues to read and write, USING the admin queues
 
     NVMe_InitialiseIOQueues();
 
-    // Run the Identify Namespace command to get bytes per sector
+    // Get some information about the drive, bytes per block specifically
 
-    NVMe_IdentifyNamespace_t* IdentifyNamespace = Paging_AllocatePage();
-    memset(IdentifyNamespace, 0, PAGING_PAGE_SIZE);
-
-    NVMe_Command_t* IdentifyNamespaceCommand = NVMe_CreateAdminCommand();
-    
-    IdentifyNamespaceCommand->Opcode = NVME_IDENTIFY_COMMAND_OPCODE;
-    IdentifyNamespaceCommand->NamespaceID = 1;
-    IdentifyNamespaceCommand->PRP1 = (uint64_t) IdentifyNamespace;
-    IdentifyNamespaceCommand->CommandSpecificFields.IdentifyFields.CNS = NVME_COMMAND_SPECIFIC_DWORD_FOR_IDENTIFY_NAMESPACE;
-
-    NVMe_RingASQDoorbell();
-
-    // The bytes per sector is stored as a power of 2 in the Identify Namespace structure
-    // The index in the LBAF of where to get it is bits 0-3 of FLBAS
-
-    uint64_t BytesPerBlock = 1 << IdentifyNamespace->LBAF[IdentifyNamespace->FLBAS & 0xF].LBADS;
-
-    // We don't need it anymore
-
-    Paging_FreePage(IdentifyNamespace);
+    NVMe_IdentifyNamespace();
 
     /* Pass the hardware-specific drive reading abstraction to the FAT32 driver,
        as well as the bytes per sector. */
@@ -114,7 +101,7 @@ void NVMe_RingASQDoorbell() {
 
     // Ring the submission doorbell
 
-    NVMe_Write32Bit(NVME_ASQ_DOORBELL_REGISTER_OFFSET, ASQTail);
+    PCI_Write32Bit(NVMeBAR0, NVME_ASQ_DOORBELL_REGISTER_OFFSET, ASQTail);
 
     // Wait until our phase bit matches with NVME's phase bit
     
@@ -133,7 +120,7 @@ void NVMe_RingASQDoorbell() {
 
 
 void NVMe_RingIOSQDoorbell() {
-    NVMe_Write32Bit(IOSQDoorbellRegisterOffset, IOSQTail);
+    PCI_Write32Bit(NVMeBAR0, IOSQDoorbellRegisterOffset, IOSQTail);
     NVMe_CompletionEntry_t* CompletionEntry = &IOCQ[IOCQHead];
     do {} while ((CompletionEntry->Status & 1) != IOCQPhaseBit);
     IOCQHead = (IOCQHead + 1) % 64;
@@ -171,17 +158,17 @@ void NVMe_DisableController() {
     // NVMe mandates that we disable the controller before programming queues
 
     // 1. Read CC.EN
-    uint32_t CC = NVMe_Read32Bit(NVME_CC_REGISTER_OFFSET);
+    uint32_t CC = PCI_Read32Bit(NVMeBAR0, NVME_CC_REGISTER_OFFSET);
 
     // 2. Clear bit CC.EN, then write CC back
     CC &= ~1;
-    NVMe_Write32Bit(NVME_CC_REGISTER_OFFSET, CC);
+    PCI_Write32Bit(NVMeBAR0, NVME_CC_REGISTER_OFFSET, CC);
 
     // 3. Wait until CSTS.RDY becomes 0
     uint32_t CSTS;
     
     do {
-        CSTS = NVMe_Read32Bit(NVME_CSTS_REGISTER_OFFSET);
+        CSTS = PCI_Read32Bit(NVMeBAR0, NVME_CSTS_REGISTER_OFFSET);
     } while (CSTS & 1);
 
     // The controller is now disabled!
@@ -211,9 +198,9 @@ void NVMe_InitialiseAdminQueues() {
 
     // Write the new data to the relevant registers
 
-    NVMe_Write32Bit(NVME_AQA_REGISTER_OFFSET, AQA);
-    NVMe_Write64Bit(NVME_ASQ_REGISTER_OFFSET, (uint64_t) ASQ);
-    NVMe_Write64Bit(NVME_ACQ_REGISTER_OFFSET, (uint64_t) ACQ);
+    PCI_Write32Bit(NVMeBAR0, NVME_AQA_REGISTER_OFFSET, AQA);
+    PCI_Write64Bit(NVMeBAR0, NVME_ASQ_REGISTER_OFFSET, (uint64_t) ASQ);
+    PCI_Write64Bit(NVMeBAR0, NVME_ACQ_REGISTER_OFFSET, (uint64_t) ACQ);
 
 }
 
@@ -232,12 +219,12 @@ void NVMe_ReEnableController() {
     CC |= (6 << 16);  // IOSQES = 64 bytes (2^6 shifted to bits 16-19)
     CC |= (4 << 20);  // IOCQES = 16 bytes (2^4 shifted to bits 20-23)
 
-    NVMe_Write32Bit(NVME_CC_REGISTER_OFFSET, CC);
+    PCI_Write32Bit(NVMeBAR0, NVME_CC_REGISTER_OFFSET, CC);
 
     uint32_t CSTS;
 
     do {
-        CSTS = NVMe_Read32Bit(NVME_CSTS_REGISTER_OFFSET);
+        CSTS = PCI_Read32Bit(NVMeBAR0, NVME_CSTS_REGISTER_OFFSET);
     } while (!(CSTS & 1));
 
 }
@@ -314,21 +301,29 @@ void NVMe_CreateIOSQ() {
 }
 
 
-uint32_t NVMe_Read32Bit(uint64_t Offset) {
-    return *(volatile uint32_t*) (NVMeBAR0 + Offset);
-}
+void NVMe_IdentifyNamespace() {
 
+    // Run the Identify Namespace command to get bytes per sector
 
-void NVMe_Write32Bit(uint64_t Offset, uint32_t Value) {
-    *(volatile uint32_t*) (NVMeBAR0 + Offset) = Value;
-}
+    NVMe_IdentifyNamespace_t* IdentifyNamespace = Paging_AllocatePage();
+    memset(IdentifyNamespace, 0, PAGING_PAGE_SIZE);
 
+    NVMe_Command_t* IdentifyNamespaceCommand = NVMe_CreateAdminCommand();
+    
+    IdentifyNamespaceCommand->Opcode = NVME_IDENTIFY_COMMAND_OPCODE;
+    IdentifyNamespaceCommand->NamespaceID = 1;
+    IdentifyNamespaceCommand->PRP1 = (uint64_t) IdentifyNamespace;
+    IdentifyNamespaceCommand->CommandSpecificFields.IdentifyFields.CNS = NVME_COMMAND_SPECIFIC_DWORD_FOR_IDENTIFY_NAMESPACE;
 
-uint64_t NVMe_Read64Bit(uint64_t Offset) {
-    return *(volatile uint64_t*) (NVMeBAR0 + Offset);
-}
+    NVMe_RingASQDoorbell();
 
+    // The bytes per sector is stored as a power of 2 in the Identify Namespace structure
+    // The index in the LBAF of where to get it is bits 0-3 of FLBAS
 
-void NVMe_Write64Bit(uint64_t Offset, uint64_t Value) {
-    *(volatile uint64_t*) (NVMeBAR0 + Offset) = Value;
+    BytesPerBlock = 1 << IdentifyNamespace->LBAF[IdentifyNamespace->FLBAS & 0xF].LBADS;
+
+    // We don't need it anymore
+
+    Paging_FreePage(IdentifyNamespace);
+
 }

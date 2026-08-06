@@ -5,7 +5,7 @@
 
 /* Whichever storage device we end up using, it's responsible
    for giving our filesystem the drive read function specific
-   to its hardware so that we can support both NVMe and SATA. */
+   to its hardware so that we can HOPEFULLY support multiple types. */
 
 void (*FAT32_DriveRead)(uint64_t StartingLBA, uint16_t NumberOfBlocks, void* PageAlignedBuffer);
 
@@ -129,6 +129,54 @@ uint32_t FAT32_GetNextCluster(uint32_t Cluster) {
 }
 
 
+FAT32_DirectoryEntry_t* FAT32_GetDirectoryEntry(const char* FilePath) {
+
+    // We don't want to mess with the user's string!
+    // Also - COPY ONE CHARACTER AHEAD - IT'S THE NULL STRING TERMINATOR!!
+
+    char FilePathCopy[strlen(FilePath)];
+    memcpy(FilePathCopy, FilePath, strlen(FilePath) + 1);
+
+    // If the path has slashes, tokenize it into its separate folder names
+
+    char* PathTokens[50];
+
+    // The first path token begins at the beginning of the FilePath string
+
+    PathTokens[0] = (char*) FilePathCopy;
+
+    int NumberOfPathTokens = 1;
+
+    for (int i = 0; i < strlen(FilePathCopy); i++) {
+        if (FilePathCopy[i] == '/' || FilePathCopy[i] == '\\') {
+            FilePathCopy[i] = '\0';
+            PathTokens[NumberOfPathTokens++] = &FilePathCopy[i + 1];
+        }
+    }
+
+    // Memcpying from before left a null at the end of the last token - we will need nulls for comparing later
+
+    // Search through the directories represented by the tokens to find the final file entry
+    // Or if the file name is the only token, simply fetch the entry from the root directory
+
+    FAT32_BPB_t* BPB = FAT32_GetBPB();
+    
+    uint32_t CurrentDirectoryFirstCluster = BPB->RootCluster;
+
+    FAT32_DirectoryEntry_t* DirectoryEntry;
+
+    for (int i = 0; i < NumberOfPathTokens; i++) {
+        DirectoryEntry = FAT32_FindInDirectory(CurrentDirectoryFirstCluster, PathTokens[i]);
+        CurrentDirectoryFirstCluster = (DirectoryEntry->FirstClusterHigh << 16) | DirectoryEntry->FirstClusterLow;
+    }
+
+    // This will automatically be NULL if the entry couldn't be found
+
+    return DirectoryEntry;
+
+}
+
+
 // Can be used to return the directory entry of either a file or folder (name must be given in 8.3 format)
 
 FAT32_DirectoryEntry_t* FAT32_FindInDirectory(uint32_t DirectoryFirstCluster, const char* RegularFormattedName) {
@@ -244,14 +292,14 @@ FAT32_DirectoryEntry_t* FAT32_FindInDirectory(uint32_t DirectoryFirstCluster, co
                 // NamePart2
 
                 for (int i = 0; i < 6; i++) {
-                    if (DirectoryEntryLFNFormat->NamePart1[i] == 0) break;
+                    if (DirectoryEntryLFNFormat->NamePart2[i] == 0) break;
                     ConstructedLongName[CurrentBufferIndex++] = (char) DirectoryEntryLFNFormat->NamePart2[i];
                 }
 
                 // NamePart3
 
                 for (int i = 0; i < 2; i++) {
-                    if (DirectoryEntryLFNFormat->NamePart1[i] == 0) break;
+                    if (DirectoryEntryLFNFormat->NamePart3[i] == 0) break;
                     ConstructedLongName[CurrentBufferIndex++] = (char) DirectoryEntryLFNFormat->NamePart3[i];
                 }
 

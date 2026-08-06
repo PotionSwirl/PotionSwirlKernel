@@ -26,6 +26,6 @@ void IDT_SetGate(int Vector, void* HandlerAddress);
 void IDT_Vector14ExceptionHandler();
 void IDT_Vector33InterruptHandler();
 
-// Our ISRs from ISR.asm.
+// Our ISRs from ISR.asm
 extern void ISR_14();
 extern void ISR_33();

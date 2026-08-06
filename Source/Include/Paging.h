@@ -23,16 +23,18 @@
 
 void Paging_Initialise(BootInfo_t* BootInfo);
 void LoadCR3();
+void Paging_EnableNoExecuteFlag();
 void Paging_MapMemory(void* VirtualAddress, void* PhysicalAddress, uint64_t Flags, uint64_t NumberOfPages);
 void Paging_MapPage(void* VirtualAddress, void* PhysicalAddress, uint64_t Flags);
 uint64_t* GetNextPagingStructure(uint64_t* CurrentPagingStructure, uint64_t Index);
 void* Paging_AllocatePage();
 void Paging_FreePage(void* Address);
 void MemoryBitmapInitialise(MemoryInfo_t* MemoryInfo);
-void MemoryBitmapSet(uint64_t Page);
-void MemoryBitmapClear(uint64_t Page);
-bool MemoryBitmapTestPage(uint64_t Page);
+void Paging_MemoryBitmapSet(uint64_t Page);
+void Paging_MemoryBitmapClear(uint64_t Page);
+bool Paging_MemoryBitmapTestPage(uint64_t Page);
 uint64_t PageAlignRoundUp(uint64_t Value);
 uint64_t Paging_PageAlignRoundDown(uint64_t Value);
 uint64_t BytesToPages(uint64_t Bytes);
+uint64_t Paging_GetTotalPages();
 void Paging_Vector14ExceptionHandlePassover(uint64_t PageFaultAddress, uint64_t ErrorCode);

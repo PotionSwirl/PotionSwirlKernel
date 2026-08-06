@@ -166,4 +166,5 @@ void Graphics_ConsoleDrawRectangle(Graphics_Point_t ConsoleStartPoint, Graphics_
 
 void Graphics_ClearScreen() {
     memset(Graphics_FrameBuffer, 0, GraphicsOutputProtocol->Mode->FrameBufferSize);
+    ConsoleCurrentPoint = Graphics_CreatePoint(0, 0);
 }

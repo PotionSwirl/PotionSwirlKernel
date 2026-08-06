@@ -5,6 +5,7 @@
 #include "Include/Libraries.h"
 #include "Include/APIC.h"
 #include "Include/Graphics.h"
+#include "Include/CPU.h"
 
 
 // The structures that keep track of our pages
@@ -75,6 +76,10 @@ void Paging_Initialise(BootInfo_t* BootInfo) {
     PhysicalAddress = (void*) APIC_GetBase();
     Paging_MapPage(PhysicalAddress, PhysicalAddress, PAGING_PAGE_PRESENT | PAGING_PAGE_WRITABLE | PAGING_PAGE_WRITE_THROUGH | PAGING_PAGE_CACHE_DISABLE | PAGING_PAGE_NO_EXECUTE);
 
+    // Enable no-execute flag
+
+    Paging_EnableNoExecuteFlag();
+
     // And finally, switch to paging!
 
     LoadCR3();
@@ -90,6 +95,29 @@ void LoadCR3() {
         : "r"(PML4)
         : "memory"
     );
+}
+
+
+// Enabling the no-execute (NX) flag for paging
+
+void Paging_EnableNoExecuteFlag() {
+
+    // Use CPUID for extended features and check bit 20 of EDX - if set, NX is supported
+
+    uint32_t EDX = CPU_GetCPUID(CPU_EXTENDED_PROCESSOR_SIGNATURE_AND_FEATURE_BITS_EAX, CPU_SELECT_EDX);
+    
+    if (!(EDX & (1 << 20))) {
+        printf("This CPU doesn't support the NX flag for paging!\n");
+        printf("Halting...\n");
+        while(true);
+    }
+
+    // Read the IA32_EFER MSR, set bit 11, and write back
+
+    uint64_t EFER = CPU_ReadMSR(CPU_IA32_EFER_MSR);
+    EFER |= (1ULL << 11);
+    CPU_WriteMSR(CPU_IA32_EFER_MSR, EFER);
+    
 }
 
 
@@ -163,8 +191,8 @@ uint64_t* GetNextPagingStructure(uint64_t* CurrentPagingStructure, uint64_t Inde
 void* Paging_AllocatePage() {
 
     for (uint64_t i = 0; i < TotalPages; i++) {
-        if (!(MemoryBitmapTestPage(i))) {
-            MemoryBitmapSet(i);
+        if (!(Paging_MemoryBitmapTestPage(i))) {
+            Paging_MemoryBitmapSet(i);
             FreePages--;
             return ((void*) (i * PAGING_PAGE_SIZE));
         }
@@ -187,8 +215,8 @@ void Paging_FreePage(void* Address) {
     }
 
     // Check if it really IS occupied just in case
-    if (MemoryBitmapTestPage(Page)) {
-        MemoryBitmapClear(Page);
+    if (Paging_MemoryBitmapTestPage(Page)) {
+        Paging_MemoryBitmapClear(Page);
         FreePages++;
     }
 
@@ -258,7 +286,7 @@ void MemoryBitmapInitialise(MemoryInfo_t* MemoryInfo) {
             uint64_t StartingPage = CurrentMemoryDescriptor->PhysicalStart / PAGING_PAGE_SIZE;
 
             for (uint64_t i = 0; i < CurrentMemoryDescriptor->NumberOfPages; i++) {
-                MemoryBitmapClear(StartingPage + i);
+                Paging_MemoryBitmapClear(StartingPage + i);
                 FreePages++;
             }
 
@@ -271,31 +299,31 @@ void MemoryBitmapInitialise(MemoryInfo_t* MemoryInfo) {
     /* Reserve page 0 so that we don't confuse a returned page address
        of 0x0 with NULL from Paging_AllocatePage(). */
 
-    MemoryBitmapSet(0);
+    Paging_MemoryBitmapSet(0);
 
     // Reserve the bitmap pages
 
     uint64_t MemoryBitmapStartingPage = ((uint64_t) MemoryBitmap) / PAGING_PAGE_SIZE;
     
     for (uint64_t i = 0; i < BytesToPages(MemoryBitmapSize); i++) {
-        MemoryBitmapSet(MemoryBitmapStartingPage + i);
+        Paging_MemoryBitmapSet(MemoryBitmapStartingPage + i);
         FreePages--;
     }
 
 }
 
 
-void MemoryBitmapSet(uint64_t Page) {
+void Paging_MemoryBitmapSet(uint64_t Page) {
     MemoryBitmap[Page / 8] |= (1 << (Page % 8));
 }
 
 
-void MemoryBitmapClear(uint64_t Page) {
+void Paging_MemoryBitmapClear(uint64_t Page) {
     MemoryBitmap[Page / 8] &= ~(1 << (Page % 8));
 }
 
 
-bool MemoryBitmapTestPage(uint64_t Page) {
+bool Paging_MemoryBitmapTestPage(uint64_t Page) {
     return ((MemoryBitmap[Page / 8] & (1 << (Page % 8))) != 0);
 }
 
@@ -317,10 +345,15 @@ uint64_t BytesToPages(uint64_t Bytes) {
 }
 
 
+uint64_t Paging_GetTotalPages() {
+    return TotalPages;
+}
+
+
 // Page fault handler
 
 void Paging_Vector14ExceptionHandlePassover(uint64_t PageFaultAddress, uint64_t ErrorCode) {
-    Graphics_ClearScreen();
+    // Graphics_ClearScreen();
     printf("EXCEPTION: PAGE FAULT\n");
     printf("---------------------------------------\n");
     printf("Page fault address: 0x%x\n", PageFaultAddress);

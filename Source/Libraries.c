@@ -227,46 +227,7 @@ bool Libraries_StringContains(const char* String, char Character) {
 
 FILE* fopen(const char* FilePath) {
 
-    // We don't want to mess with the user's string!
-    // Also - COPY ONE CHARACTER AHEAD - IT'S THE NULL STRING TERMINATOR!!
-
-    char FilePathCopy[strlen(FilePath)];
-    memcpy(FilePathCopy, FilePath, strlen(FilePath) + 1);
-
-    // If the path has slashes, tokenize it into its separate folder names
-
-    char* PathTokens[50];
-
-    // The first path token begins at the beginning of the FilePath string
-
-    PathTokens[0] = (char*) FilePathCopy;
-
-    int NumberOfPathTokens = 1;
-
-    for (int i = 0; i < strlen(FilePathCopy); i++) {
-        if (FilePathCopy[i] == '/' || FilePathCopy[i] == '\\') {
-            FilePathCopy[i] = '\0';
-            PathTokens[NumberOfPathTokens++] = &FilePathCopy[i + 1];
-        }
-    }
-
-    // Memcpying from before left a null at the end of the last token - we will need nulls for comparing later
-
-    // Search through the directories represented by the tokens to find the final file entry
-    // Or if the file name is the only token, simply fetch the entry from the root directory
-
-    FAT32_BPB_t* BPB = FAT32_GetBPB();
-    
-    uint32_t CurrentDirectoryFirstCluster = BPB->RootCluster;
-
-    FAT32_DirectoryEntry_t* DirectoryEntry;
-
-    for (int i = 0; i < NumberOfPathTokens; i++) {
-        DirectoryEntry = FAT32_FindInDirectory(CurrentDirectoryFirstCluster, PathTokens[i]);
-        CurrentDirectoryFirstCluster = (DirectoryEntry->FirstClusterHigh << 16) | DirectoryEntry->FirstClusterLow;
-    }
-
-    // This will automatically be NULL if the entry couldn't be found
+    FAT32_DirectoryEntry_t* DirectoryEntry = FAT32_GetDirectoryEntry(FilePath);
 
     FILE* FilePointer = (FILE*) DirectoryEntry;
     return FilePointer;

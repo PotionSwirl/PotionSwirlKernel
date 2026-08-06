@@ -14,16 +14,17 @@ IDT_Descriptor_t IDT_Descriptor;
 
 void IDT_Initialise() {
 
-    // Disable legacy PIC - this must be done at the very END!
+    // Disable legacy PIC
     APIC_DisablePIC();
 
-    // Fill IDT with interrupt entries.
+    // Fill IDT with interrupt entries
     IDT_SetGate(14, ISR_14);            // Page fault
     IDT_SetGateIOAPIC(33, ISR_33);      // Keyboard
 
-    // Load IDT using descriptor.
+    // Load IDT using descriptor
     IDT_Descriptor.Limit = sizeof(IDT_Entry_t) * 256 - 1;
     IDT_Descriptor.Base = (uint64_t) &IDT;
+
     asm volatile (
         "LIDT %0\n"
         "STI"
@@ -66,6 +67,7 @@ void IDT_SetGate(int Vector, void* HandlerAddress) {
 
 
 // Page fault
+
 void IDT_Vector14ExceptionHandler(uint64_t ErrorCode) {
 
     uint64_t CR2;
@@ -81,6 +83,7 @@ void IDT_Vector14ExceptionHandler(uint64_t ErrorCode) {
 
 
 // Keyboard
+
 void IDT_Vector33InterruptHandler() {
     uint8_t Scancode = inb(0x60);
     Keyboard_Vector33InterruptHandlePassover(Scancode);

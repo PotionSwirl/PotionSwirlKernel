@@ -10,12 +10,16 @@
 #include "Include/IDT.h"
 #include "Include/PCI.h"
 #include "Include/Paging.h"
+#include "Include/IHDA.h"
 
 
 // This OS requires: APIC, NVMe, FAT32 system partition
 
 
 void kmain(BootInfo_t* BootInfoArgument) {
+
+   // Initialise the CPU Timestamp Counter.
+   CPU_SleepInitialise();
 
    // Give the Graphics Output Protocol and font data to the Graphics library to initialise its own variables.
    Graphics_Initialise(BootInfoArgument->GraphicsOutputProtocol, BootInfoArgument->FontBuffer);
@@ -26,19 +30,21 @@ void kmain(BootInfo_t* BootInfoArgument) {
    // Set up paging to manage memory!
    Paging_Initialise(BootInfoArgument);
 
-   // Enable the APIC and find the Local APIC.
-   APIC_Initialise(BootInfoArgument->IOAPICAddress);
-
    // Set up the IDT, which also disables legacy PIC before we set up more modern APIC.
    IDT_Initialise();
+
+   // Enable the APIC and find the Local APIC.
+   APIC_Initialise(BootInfoArgument->IOAPICAddress);
 
    // Initialise the devices that we'll be using, i.e. NVMe drive.
    PCI_InitialiseDevices(BootInfoArgument->ECAMBaseAddress);
 
    // The FAT32 filesystem initialisation function is called by the available storage device initialisation function.
 
-   // Print welcome message.
-   printf("Welcome to Brainrot26!\n");
+   // Print welcome message!
+   printf("---------------------------------\nWelcome to Brainrot26!\n");
+
+   IHDA_PlayWAV("ThisIsATestFolder\\windows-longhorn-error.wav");
 
    while(true);
 

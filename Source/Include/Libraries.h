@@ -1,6 +1,7 @@
 #pragma once
 
 #include <stdint.h>
+#include <stdbool.h>
 #include "FAT32.h"
 
 /************ PRINTING ************/

@@ -102,6 +102,7 @@ extern void (*FAT32_DriveRead)(uint64_t StartingLBA, uint16_t NumberOfBlocks, vo
 void FAT32_Initialise(void (*FAT32_DriveReadArgument), uint64_t BytesPerBlock);
 uint32_t FAT32_ClusterToSector(uint32_t Cluster);
 uint32_t FAT32_GetNextCluster(uint32_t Cluster);
+FAT32_DirectoryEntry_t* FAT32_GetDirectoryEntry(const char* FilePath);
 FAT32_DirectoryEntry_t* FAT32_FindInDirectory(uint32_t DirectoryFirstCluster, const char* RegularFormattedName);
 void FAT32_FormatFileName(const char* FileName, char* Destination);
 void FAT32_FormatFolderName(const char* FolderName, char* Destination);

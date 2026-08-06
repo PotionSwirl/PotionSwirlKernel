@@ -7,7 +7,7 @@ LD = ld
 LD_FLAGS = -nostdlib -z max-page-size=0x1000
 LD_FLAGS_BOOT = -nostdlib -shared -Wl,-znocombreloc -Wl,-Bsymbolic -Wl,-z,notext -Wl,-T,/usr/lib/elf_x86_64_efi.lds /usr/lib/crt0-efi-x86_64.o
 
-all: BOOT Find Kernel.elf Mount CopyFiles Eject Run
+all: BOOT Find Kernel.elf
 
 # Find every C and ASM file in Source folder
 C_SOURCES := $(shell find Source -name "*.c" ! -name "Bootx64.c")
@@ -40,28 +40,35 @@ Build/%.o: Source/%.asm
 Kernel.elf: $(OBJ_FILES)
 	$(LD) $(LD_FLAGS) -T Source/Kernel_LinkerScript.ld $(OBJ_FILES) -o Build/Kernel.elf
 
-# Write files to USB in UEFI format
-USB:
+# Write files to real USB in UEFI format
+REAL_USB:
+	make
 	sudo mount -t drvfs D: /mnt/d
-	sudo losetup -Pf Build/NVME.img
-	sudo mount /dev/loop0p1 /tmp/NVME
-	cp -r /tmp/NVME/. /mnt/d/
-	sudo umount /tmp/NVME
-	sudo losetup -d /dev/loop0
+	sudo cp Build/Bootx64.efi /mnt/d/EFI/Boot/Bootx64.efi
+	sudo cp Build/Kernel.elf /mnt/d/Kernel.elf
 	sudo umount /mnt/d
 
-CopyFiles:
-	sudo cp Build/Bootx64.efi /tmp/NVME/EFI/Boot/
-	sudo cp Build/Kernel.elf /tmp/NVME/
+QEMU_USB:
+	make
+	sudo losetup -Pf Build/USB.img
+	mkdir -p /tmp/USB
+	sudo mount /dev/loop0p1 /tmp/USB
+	sudo cp Build/Bootx64.efi /tmp/USB/EFI/Boot/
+	sudo cp Build/Kernel.elf /tmp/USB/
+	sudo umount /tmp/USB
+	sudo losetup -d /dev/loop0
+	make Run
 
-Mount:
+QEMU_Image:
+	make
 	sudo losetup -Pf Build/NVME.img
 	mkdir -p /tmp/NVME
 	sudo mount /dev/loop0p1 /tmp/NVME
-
-Eject:
+	sudo cp Build/Bootx64.efi /tmp/NVME/EFI/Boot/
+	sudo cp Build/Kernel.elf /tmp/NVME/
 	sudo umount /tmp/NVME
 	sudo losetup -d /dev/loop0
+	make Run
 
 Run:
 	qemu-system-x86_64 \
@@ -69,9 +76,12 @@ Run:
     -bios /usr/share/ovmf/OVMF.fd \
     -drive file=Build/NVME.img,if=none,id=nvme0,format=raw \
     -device nvme,drive=nvme0,serial=RaffayNVMe
+	-device qemu-xhci,id=xhci \
+  	-drive file=Build/USB.img,if=none,id=usbboot,format=raw \
+  	-device usb-storage,bus=xhci.0,drive=usbboot,bootindex=1
 
 Commit:
 	git remote set-url origin https://github.com/PotionSwirl/Brainrot26.git
 	git add .
-	git commit -m "$(MSG)"
+	git commit -m "$(Message)"
 	git push -u origin main

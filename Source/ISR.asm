@@ -5,6 +5,7 @@ BITS 64
 
 GLOBAL ISR_%1
 EXTERN IDT_Vector%1InterruptHandler
+
 ISR_%1:
     PUSH RAX
     PUSH RCX
@@ -29,8 +30,11 @@ ISR_%1:
 MAKE_ISR 33
 
 
+; Special case for exceptions
+
 GLOBAL ISR_14
 EXTERN IDT_Vector14ExceptionHandler
+
 ISR_14:
 
     PUSH RAX
