@@ -1,3 +1,5 @@
+#pragma once
+
 #include <stdint.h>
 
 typedef struct __attribute__((packed)) {
@@ -58,3 +60,9 @@ typedef struct __attribute__((packed)) {
     uint32_t IOAPICAddress;
     uint32_t GlobalSystemInterruptBase;
 } ACPI_IOAPIC_Entry_t;
+
+void ACPI_Initialise(ACPI_RSDP2_t* RSDPArgument);
+ACPI_MADT_t* ACPI_GetMADT();
+uint32_t ACPI_GetIOAPICAddress();
+uint64_t ACPI_GetECAMBaseAddress();
+uint64_t ACPI_GetECAMSize();

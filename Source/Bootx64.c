@@ -8,8 +8,13 @@
 #include "Include/PCI.h"
 
 
+// Declare globally so it doesn't get pushed to stack by declaring inside function instead.
+
+BootInfo_t BootInfoArgument;
+
+
 // For gnu-efi, function MUST be called 'efi_main'!
-EFI_STATUS efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable) {
+EFI_STATUS efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE* SystemTable) {
 
     // Set up libraries that allow us to use UEFI Boot Services like Print
     InitializeLib(ImageHandle, SystemTable);
@@ -221,107 +226,9 @@ EFI_STATUS efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable) {
     uint8_t* SourceGlyphBytes = (uint8_t*) FontBufferArgument + FontBufferArgument2->HeaderSize;
     uefi_call_wrapper(ST->BootServices->CopyMem, 3, DestinationGlyphBytes, SourceGlyphBytes, GlyphBytesSize);
 
-    /* -------------------------------------------------------------
-       | 9. Find devices.                                          |                 
-       ------------------------------------------------------------- */
-
-    ACPI_RSDP2_t* RSDP;
-    EFI_GUID ACPI2_GUID = ACPI_20_TABLE_GUID;
-
-    // We want to find the Multiple APIC Description Table (MADT).
-
-    // Let's find the RSDP first.
-    // Search through UEFI tables.
-    for (UINTN i = 0; i < ST->NumberOfTableEntries; i++) {
-
-        EFI_CONFIGURATION_TABLE* Table = &ST->ConfigurationTable[i];
-
-        // Check if it's the RSDP.
-        // If so, save it.
-        if (CompareGuid(&Table->VendorGuid, &ACPI2_GUID) == 0) {
-            RSDP = (ACPI_RSDP2_t*) Table->VendorTable;
-            // Stop searching. 
-            break;
-        }
-
-    }
-
-    // Verify if the RSDP really DOES exist.
-    if (!RSDP) {
-        Print(L"Failed to find ACPI RSDP!\r\n");
-        while(true);
-    }
-
-    // Parse XSDT to find "APIC" entry, which = the MADT
-    ACPI_XSDT_t* XSDT = (ACPI_XSDT_t*) RSDP->XSDTAddress;
-
-    // Get number of entries in XSDT - our struct doesn't specify it.
-    // Each XSDT entry is a uint64_t pointer.
-    uint32_t XSDTEntryCount = (XSDT->Header.Length - sizeof(ACPI_SDTHeader_t)) / sizeof(uint64_t);
-
-    // Finally, search for the MADT and MCFG - that's all we're here for!
-    // MCFG = Memory Mapped Configuration Space
-    ACPI_MADT_t* MADT;
-    ACPI_MCFG_t* MCFG;
-    uint64_t ECAMBaseAddressArgument;
-    uint64_t ECAMSizeArgument;
-
-    for (uint32_t i = 0; i < XSDTEntryCount; i++) {
-
-        ACPI_SDTHeader_t* SDTHeader = (ACPI_SDTHeader_t*) XSDT->Entries[i];
-    
-        // Stop searching if we've found them.
-
-        if (CompareMem(SDTHeader->Signature, "APIC", 4) == 0) {
-            MADT = (ACPI_MADT_t*) SDTHeader;
-        }
-
-        if (CompareMem(SDTHeader->Signature, "MCFG", 4) == 0) {
-            MCFG = (ACPI_MCFG_t*) SDTHeader;
-            ACPI_MCFG_Entry_t* Entry = &(MCFG->Entries[0]);
-            // Only care about first entry in MCFG.
-            ECAMBaseAddressArgument = Entry->BaseAddress;
-            ECAMSizeArgument = (Entry->EndBus - Entry->StartBus + 1) * 0x100000;
-        }
-
-    }
-
-    // Verify that we actually found it.
-
-    if (!MADT) {
-        Print(L"Failed to find MADT for APIC!\r\n");
-        while(true);
-    }
-
-    if (!MCFG) {
-        Print(L"Failed to find MCFG!\r\n");
-        while(true);
-    }
-
-    // Scan MADT entries to find the IOAPIC.
-
-    uint8_t* MADTEntryCursor = MADT->Entries;
-    uint8_t* MADTEntriesEnd = (uint8_t*) MADT + MADT->Header.Length;
-    uint32_t IOAPICAddressArgument;
-
-    while (MADTEntryCursor < MADTEntriesEnd) {
-
-        uint8_t MADTEntryType = MADTEntryCursor[0];
-        uint8_t MADTEntryLength = MADTEntryCursor[1];
-
-        // Type 1 = IOAPIC.
-        if (MADTEntryType == 1) {
-            ACPI_IOAPIC_Entry_t* IOAPIC = (ACPI_IOAPIC_Entry_t*) MADTEntryCursor;
-            IOAPICAddressArgument = IOAPIC->IOAPICAddress;
-        }
-
-        MADTEntryCursor += MADTEntryLength;
-
-    }
-
 
     /* -------------------------------------------------------------
-       | 10. Get Graphics Output Protocol (GOP) and memory map.    |                      
+       | 9. Get the Graphics Output Protocol, RSDP and memory map. |               
        ------------------------------------------------------------- */
     
     // Get GOP
@@ -330,6 +237,31 @@ EFI_STATUS efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable) {
     Status = uefi_call_wrapper(BS->LocateProtocol, 3, &GraphicsOutputProtocol_GUID, NULL, (void**) &GraphicsOutputProtocolArgument);
     if (EFI_ERROR(Status)) {
         Print(L"Failed to get Graphics Output Protocol.\r\n");
+        while(true);
+    }
+
+    // Quickly grab a pointer to the RSDP before EFI runs away! :D
+
+    ACPI_RSDP2_t* RSDPArgument;
+    EFI_GUID ACPI2_GUID = ACPI_20_TABLE_GUID;
+
+    for (uint64_t i = 0; i < ST->NumberOfTableEntries; i++) {
+
+        EFI_CONFIGURATION_TABLE* Table = &ST->ConfigurationTable[i];
+
+        // Check if it's the RSDP.
+        // If so, save it.
+        if (CompareGuid(&Table->VendorGuid, &ACPI2_GUID) == 0) {
+            RSDPArgument = (ACPI_RSDP2_t*) Table->VendorTable;
+            // Stop searching. 
+            break;
+        }
+
+    }
+
+    // Verify if the RSDP really DOES exist.
+    if (!RSDPArgument) {
+        Print(L"Failed to find ACPI RSDP!\r\n");
         while(true);
     }
 
@@ -362,7 +294,7 @@ EFI_STATUS efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable) {
     }
 
     /* -------------------------------------------------------------
-       | 11. Exit boot services and jump to kernel!                |                    
+       | 10. Exit boot services and jump to kernel!                |                    
        ------------------------------------------------------------- */
     
     // And finally, exit boot services, passing in our map key to prove that memory hasn't been altered after fetching it.
@@ -374,12 +306,8 @@ EFI_STATUS efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable) {
 
     // Create a BootInfo struct with essential information to pass to the kernel.
 
-    BootInfo_t BootInfoArgument;
     BootInfoArgument.GraphicsOutputProtocol = GraphicsOutputProtocolArgument;
-    BootInfoArgument.IOAPICAddress = IOAPICAddressArgument;
-    BootInfoArgument.ECAMBaseAddress = ECAMBaseAddressArgument;
-    BootInfoArgument.ECAMSize = ECAMSizeArgument;
-    // Memory info
+    BootInfoArgument.RSDP = RSDPArgument;
     BootInfoArgument.MemoryInfo.MemoryMap = MemoryMap;
     BootInfoArgument.MemoryInfo.MemoryMapSize = MemoryMapSize;
     BootInfoArgument.MemoryInfo.MemoryMapKey = MemoryMapKey;

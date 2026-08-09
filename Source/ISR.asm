@@ -10,6 +10,8 @@ ISR_%1:
     PUSH RAX
     PUSH RCX
     PUSH RDX
+    PUSH RSI
+    PUSH RDI
     PUSH R8
     PUSH R9
     PUSH R10
@@ -19,6 +21,8 @@ ISR_%1:
     POP R10
     POP R9
     POP R8
+    POP RDI
+    POP RSI
     POP RDX
     POP RCX
     POP RAX
@@ -28,6 +32,7 @@ ISR_%1:
 
 
 MAKE_ISR 33
+MAKE_ISR 64
 
 
 ; Special case for exceptions

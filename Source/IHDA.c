@@ -1,9 +1,11 @@
 /********** INTEL HIGH DEFINITION AUDIO **********/
 // Remember to test multiple types of WAVs!
+// Also, annotate corrections to the specification i.e. RIRB flowchart, INTCTL stream bit mapping, maybe notes about caching, etc.
 
 
 #include <stdint.h>
 #include <stdbool.h>
+#include <stdalign.h>
 #include "Include/IHDA.h"
 #include "Include/PCI.h"
 #include "Include/Libraries.h"
@@ -13,6 +15,8 @@
 
 
 static volatile uint8_t* IHDABAR0;
+static volatile PCI_BusDeviceFunction_t* IHDABusDeviceFunction;
+
 static uint8_t SelectedCAd;
 static uint16_t CORBEntries;
 
@@ -21,30 +25,47 @@ static uint32_t* CORB;  // Commands (verbs)
 static uint64_t* RIRB;  // Responses
 
 // Streaming audio to output
-static uint16_t SDnFMT;
+static uint16_t SDnFMT = 0x0011;
 static uintptr_t OutputStreamDescriptorsStartingAddress;
 static void* OutputStreamBuffer = NULL;
+static void* HelperBuffer;
 
 // Allocate some contiguous pages to work in when playing a stream
 // Must be an even number of pages to split in half for the two BDL entries
 static uint8_t OutputStreamBufferPages = 4;
 
 // Buffer Descriptor List (BDL)
-static IHDA_BDL_t OutputStream1BDL;
+/* Apparently if we give the BDL a dynamic page later and leave it as an
+   uninitalised pointer HERE, I think the CPU cache doesn't acknowledge the change
+   and Intel refers to the uninitialised pointer instead. Aligning it as a constant
+   ensures it's in the right place from the start. */
+/* But remember, if we ever need to scale streams up dynamically (which we probably
+   won't) - we should absolutely dynamically allocate the BDL and find a way to work
+   around CPU caching! */
+/* Also, we COULD declare a fixed pointer to this struct (not a great idea), but this
+   doesn't work because the compiler only reserves space for the pointer integer, not
+   the struct itself. Declaring the structs here explicitly reserves space for them,
+   so that they actually ARE wherever we first tell them to be.*/
+
+static alignas(128) IHDA_BDLE_t OutputStream1BDL[2];
 
 // Our primary nodes
 uint8_t AFGNID;
 uint8_t SpeakerPinNID;
 uint8_t DACNID;
 
+uint8_t ISS;  // Input Streams Supported
 
-void IHDA_Initialise(volatile uint8_t* IHDABAR0Argument) {
+
+void IHDA_Initialise(volatile uint8_t* IHDABAR0Argument, PCI_BusDeviceFunction_t* IHDABusDeviceFunctionArgument) {
     IHDABAR0 = IHDABAR0Argument;
+    IHDABusDeviceFunction = IHDABusDeviceFunctionArgument;
     IHDA_TakeControllerOutOfReset();
     IHDA_FindCodec();
     IHDA_InitialiseCORB();
     IHDA_InitialiseRIRB();
-    IHDA_InitialiseOutputStream();
+    IHDA_InitialiseOutputStreamBuffer();
+    IHDA_InitialiseOutputStream1Interrupt();
     IHDA_CreateSpeakerPinAndDACAudioPath();
     IHDA_InitialiseSpeakerPinAndDAC();
 }
@@ -267,7 +288,7 @@ void IHDA_InitialiseRIRB() {
 
 // We'll only be using Output Stream 1 to play all the system's audio
 
-void IHDA_InitialiseOutputStream() {
+void IHDA_InitialiseOutputStreamBuffer() {
 
     // Each stream gets its own Stream Descriptor
     // A Stream Descriptor is a set of registers controlling the stream
@@ -279,60 +300,28 @@ void IHDA_InitialiseOutputStream() {
     // GCAP.ISS is [11:8]
 
     uint16_t GCAP = PCI_Read16Bit(IHDABAR0, IHDA_GCAP_REGISTER_OFFSET);
-    uint8_t ISS = (GCAP >> 8) & 0xF;
+    ISS = (GCAP >> 8) & 0xF;
 
     OutputStreamDescriptorsStartingAddress = ((uintptr_t) IHDABAR0) + 0x80 + ISS * 0x20;
 
-    // Loop through all pages to find consecutive free pages
-
-    for (uint64_t i = 0; i < Paging_GetTotalPages(); i++) {
-
-        // Check if a page is free
-        // E.g. page 5
-
-        bool ConsecutiveFreePagesFound = true;
-
-        if (!(Paging_MemoryBitmapTestPage(i))) {
-
-            // If it's free, check whether the relevant number of pages after the first are free too
-            // E.g. pages 6, 7 and 8 if we want 4 contiguous pages
-
-            for (uint64_t j = i + 1; j <= i + OutputStreamBufferPages - 1; j++) {
-
-                if (Paging_MemoryBitmapTestPage(j)) {
-                    ConsecutiveFreePagesFound = false;
-                    break;
-                }
-                
-            }
-
-        } else {
-
-            ConsecutiveFreePagesFound = false;
-
-        }
-
-        // If we've found consecutive pages, reserve them all
-        // Then, get the address at the beginning of this new contiguous block of memory
-
-        if (ConsecutiveFreePagesFound) {
-            
-            for (uint64_t j = i; j <= i + OutputStreamBufferPages - 1; j++) {
-                Paging_MemoryBitmapSet(j);
-            }
-
-            OutputStreamBuffer = (void*) (i * PAGING_PAGE_SIZE);
-
-            break;
-
-        }
-
-    }
+    OutputStreamBuffer = Paging_AllocateContiguousPages(OutputStreamBufferPages);
+    memset(OutputStreamBuffer, 0, PAGING_PAGE_SIZE * OutputStreamBufferPages);
 
     if (OutputStreamBuffer == NULL) {
         printf("IHDA_InitialiseOutputStream: Couldn't find enough contiguous memory to play sound.\n");
         return;
     }
+
+    // Also find a page to read WAV file clusters in constantly
+    // This is because an NVMe read address must be page-aligned
+    // We'll then move the final data into the Output Stream Buffer at the right offset
+
+    FAT32_BPB_t* BPB = FAT32_GetBPB();
+
+    uint8_t HelperBufferPages = Paging_BytesToPages(BPB->SectorsPerCluster * BPB->BytesPerSector);
+
+    HelperBuffer = Paging_AllocateContiguousPages(HelperBufferPages);
+    memset(HelperBuffer, 0, HelperBufferPages * PAGING_PAGE_SIZE);
 
     // To configure the controller with our audio, we need to do a few things
     
@@ -344,95 +333,108 @@ void IHDA_InitialiseOutputStream() {
        while the first plays, and so on */
     // This is called ping-pong buffering :) - remember, the BDL must have at least 2 valid entries!
 
-    uint8_t OutputStreamBufferHalfSize = OutputStreamBufferPages / 2 * PAGING_PAGE_SIZE;
-
-    OutputStream1BDL.BDLE0.Address = (uintptr_t) OutputStreamBuffer;
-    OutputStream1BDL.BDLE0.Length = OutputStreamBufferHalfSize;
-    OutputStream1BDL.BDLE0.IOCAndReserved = 1;
-
-    OutputStream1BDL.BDLE1.Address = ((uintptr_t) OutputStreamBuffer) + OutputStreamBufferHalfSize;
-    OutputStream1BDL.BDLE1.Length = OutputStreamBufferHalfSize;
-    OutputStream1BDL.BDLE1.IOCAndReserved = 1;
-
-    // Now let's configure Output Stream Descriptor 1 with a base profile of 48 kHz 16-bit stereo audio
-    // This profile is supported by virtually every codec
-    // We'll resample any audio data that presents with other attributes
-
-    // Before writing to the stream registers, we must reset the stream
-    // To reset, set SDnCTL.SRST (bit 0), read it back, then clear it and read it back again
-
-    uint32_t SDnCTL = IHDA_OutputStreamDescriptorRead(IHDA_24_BIT_REGISTER, 1, IHDA_SDNCTL_REGISTER_OFFSET);
-    SDnCTL |= 1;
-    IHDA_OutputStreamDescriptorWrite(IHDA_24_BIT_REGISTER, 1, IHDA_SDNCTL_REGISTER_OFFSET, SDnCTL);
-
-    do {
-        SDnCTL = IHDA_OutputStreamDescriptorRead(IHDA_24_BIT_REGISTER, 1, IHDA_SDNCTL_REGISTER_OFFSET);
-    } while (!(SDnCTL & 1));
-
-    SDnCTL &= ~1;
-    IHDA_OutputStreamDescriptorWrite(IHDA_24_BIT_REGISTER, 1, IHDA_SDNCTL_REGISTER_OFFSET, SDnCTL);
-
-    do {
-        SDnCTL = IHDA_OutputStreamDescriptorRead(IHDA_24_BIT_REGISTER, 1, IHDA_SDNCTL_REGISTER_OFFSET);
-    } while (SDnCTL & 1);
-
-    // Enable an interrupt to be triggered by IOC by setting SDnCTL.IOCE (bit 2)
-
-    SDnCTL |= (1 << 2);
-    IHDA_OutputStreamDescriptorWrite(IHDA_24_BIT_REGISTER, 1, IHDA_SDNCTL_REGISTER_OFFSET, SDnCTL);
-
-    // Assign the Stream Descriptor its stream ID of 1 in SDnCTL.STRM (23:20)
-
-    SDnCTL |= (1 << 20);
-    IHDA_OutputStreamDescriptorWrite(IHDA_24_BIT_REGISTER, 1, IHDA_SDNCTL_REGISTER_OFFSET, SDnCTL);
-
-    // Now we configure the stream format (SDnFMT)
-    // For 48 kHz 16-bit stereo audio, we can hardcode SDnFMT
+    uint32_t OutputStreamBufferHalfSize = OutputStreamBufferPages / 2 * PAGING_PAGE_SIZE;
     
-    // Bit 14 = Sample Base Rate (BASE) -> 0 for 48 kHz
-    // Bits 13:11 = Sample Base Rate Multiple (MULT) -> 000 for 48 kHz
-    // Bits 10:8 = Sample Base Rate Divisor (DIV) -> 000 for 48 kHz
-    // Bit 7 = Reserved
-    // Bits 6:4 = Bits per Sample (BITS) -> 001 for 16 bits
-    // Bits 3:0 = Number of Channels (CHAN) -> 0001 for 2 channels (stereo)
+    OutputStream1BDL[0].Address = (uintptr_t) OutputStreamBuffer;
+    OutputStream1BDL[0].Length = OutputStreamBufferHalfSize;
+    OutputStream1BDL[0].IOCAndReserved = 1;
+
+    OutputStream1BDL[1].Address = ((uintptr_t) OutputStreamBuffer) + OutputStreamBufferHalfSize;
+    OutputStream1BDL[1].Length = OutputStreamBufferHalfSize;
+    OutputStream1BDL[1].IOCAndReserved = 1;
+
+}
+
+
+void IHDA_InitialiseOutputStream1Interrupt() {
+
+    // We now need to plug the IOC interrupts into our IDT
     
-    SDnFMT = 0x0011;
+    // Enable global controller interrupts in INTCTL
+    // Set INTCTL.GIE (bit 31)
 
-    IHDA_OutputStreamDescriptorWrite(IHDA_16_BIT_REGISTER, 1, IHDA_SDNFMT_REGISTER_OFFSET, SDnFMT);
+    uint32_t INTCTL = PCI_Read32Bit(IHDABAR0, IHDA_INTCTL_REGISTER_OFFSET);
 
-    // Next, write the lower 32 bits of the address of our BDL to SDnBDPL
-    // And if the controller supports 64-bit addressing, write the upper 32 bits to SDnBDPU
-    // Bits 6:0 in SDnBDPL are hardwired to 0 to enforce 128-byte alignment
+    INTCTL |= (1 << 31);
 
-    uint32_t SDnBDPL = (uint32_t) (uintptr_t) &OutputStream1BDL;
-    IHDA_OutputStreamDescriptorWrite(IHDA_32_BIT_REGISTER, 1, IHDA_SDNBDPL_REGISTER_OFFSET, SDnBDPL);
+    // Now enable the stream interrupt for Output Stream 1 using bits 29:0 (INTCTL.SIE)
+    // Set the bit for Output Stream 1 which comes after the Input Stream bits
+    // This depends on ISS (Input Streams Supported)
+    // e.g. Bit 1 = Input Stream 1, bit 2 = Input Stream 2 ... Bit 20 = Output Stream x, etc.
+    /* The specification implies that Input and Output Streams 0 are left out, but by bit 0 = Input Stream 1
+       I think they meant it equals to the first input stream, which is Input Stream 0. */
+    // ISS includes Input Stream 0
+    // So shifting 1 to the left by (ISS + 1) will get us to the Output Stream 1 bit
 
-    if (GCAP & 1) {
+    INTCTL |= (1 << (ISS + 1));
 
-        uint32_t SDnBDPU = (uint32_t) (((uintptr_t) &OutputStream1BDL) >> 32);
-        IHDA_OutputStreamDescriptorWrite(IHDA_32_BIT_REGISTER, 1, IHDA_SDNBDPU_REGISTER_OFFSET, SDnBDPU);
+    PCI_Write32Bit(IHDABAR0, IHDA_INTCTL_REGISTER_OFFSET, INTCTL);
+    
+    // Read the Status Register from IHDA's PCI Configuration Space
+    // If bit 4 is set, capabilities are supported and we can see which ones there are
 
-    } else if (((uintptr_t) &OutputStream1BDL) >= 0x100000000) {
+    uint16_t StatusRegister = PCI_SetupRead16Bit(IHDABusDeviceFunction->Bus, IHDABusDeviceFunction->Device, IHDABusDeviceFunction->Function, PCI_STATUS_REGISTER_OFFSET);
 
-        printf("IHDA_InitialiseOutputStream: The IHDA controller doesn't support 64-bit addressing, and the BDL for Output Stream %d is placed at a 64-bit address!\n", 1);
-        printf("IHDA_InitialiseOutputStream: Please place it below the 4GB boundary. Thanks :)\n");
+    if (!(StatusRegister & (1 << 4))) {
+        printf("IHDA_InitialiseOutputStream1Interrupt: IHDA's PCI Configuration Space reports that it does not support capabilities.\n");
+        printf("IHDA_InitialiseOutputStream1Interrupt: Halting...\n");
         while(true);
+    }
+
+    // Read its capabilities
+
+    uint8_t CapabilitiesPointer = PCI_SetupRead8Bit(IHDABusDeviceFunction->Bus, IHDABusDeviceFunction->Device, IHDABusDeviceFunction->Function, PCI_CAPABILITIES_POINTER_REGISTER_OFFSET) & ~0x3;
+
+    bool MSISupported = false;
+
+    // The Capabilities Pointer Register contains the register offset of the first capability structure
+    // A capability structure header is 2 bytes: the first byte is the code of the actual capability, and the second is the offset of the next structure
+    // Once the next-structure pointer is 0x00, we've reached the end of the list
+    
+    while (CapabilitiesPointer != 0x00) {
+
+        uint16_t CapabilityStructure = PCI_SetupRead16Bit(IHDABusDeviceFunction->Bus, IHDABusDeviceFunction->Device, IHDABusDeviceFunction->Function, CapabilitiesPointer);
+
+        if ((CapabilityStructure & 0xFF) == PCI_MSI_CAPABILITY || (CapabilityStructure & 0xFF) == PCI_MSIX_CAPABILITY) {
+            MSISupported = true;
+            break;
+        }
+
+        CapabilitiesPointer = (CapabilityStructure & ~0xFF) >> 8;
 
     }
 
-    // Now, write the length of the cyclic buffer (all BDLE buffer sizes combined) to SDnCBL
-    // That's just a fixed number of pages that we already set up for out stream buffer -> that IS our cyclic buffer!
+    if (!MSISupported) {
+        printf("IHDA_InitialiseOutputStream1Interrupt: Intel High Definition Audio on this computer does not support MSI.\n");
+        printf("IHDA_InitialiseOutputStream1Interrupt: Halting...\n");
+        while(true);
+    }
 
-    uint32_t SDnCBL = OutputStreamBufferPages * PAGING_PAGE_SIZE;
-    IHDA_OutputStreamDescriptorWrite(IHDA_32_BIT_REGISTER, 1, IHDA_SDNCBL_REGISTER_OFFSET, SDnCBL);
+    // If we've found MSI, we write to registers at offsets from the pointer to that Capability Structure
+    // This is the MSI Capability block offset
 
-    // Finally, write the last valid index of the BDL to SDnLVI
-    // For a 2-entry-minimum BDL, this is at least 1
+    // Write 0xFEE00000 to the Message Address register - the lower 32 bits of the address
+    // This space is specially reserved for Architectural Interrupt Delivery
 
-    uint16_t SDnLVI = 1;
-    IHDA_OutputStreamDescriptorWrite(IHDA_16_BIT_REGISTER, 1, IHDA_SDNLVI_REGISTER_OFFSET, SDnLVI);
+    PCI_SetupWrite32Bit(IHDABusDeviceFunction->Bus, IHDABusDeviceFunction->Device, IHDABusDeviceFunction->Function, CapabilitiesPointer + 0x04, 0xFEE00000);
 
-    // The stream's characteristics are now configured!
+    uint16_t MessageControlRegister = PCI_SetupRead16Bit(IHDABusDeviceFunction->Bus, IHDABusDeviceFunction->Device, IHDABusDeviceFunction->Function, CapabilitiesPointer + 0x02);
+
+    // If bit 7 of the Message Control register is set, 64-bit addressing is supported
+    // If so, write 0x00000000 (upper 32 bits) to offset 0x08 and our chosen IDT vector to 0x0C
+    // Otherwise, write the IDT vector to 0x08
+
+    if (MessageControlRegister & (1 << 7)) {
+        PCI_SetupWrite32Bit(IHDABusDeviceFunction->Bus, IHDABusDeviceFunction->Device, IHDABusDeviceFunction->Function, CapabilitiesPointer + 0x08, 0x00000000);
+        PCI_SetupWrite16Bit(IHDABusDeviceFunction->Bus, IHDABusDeviceFunction->Device, IHDABusDeviceFunction->Function, CapabilitiesPointer + 0x0C, 0x40); // 0x40 (64) and above is great for custom use
+    } else {
+        PCI_SetupWrite16Bit(IHDABusDeviceFunction->Bus, IHDABusDeviceFunction->Device, IHDABusDeviceFunction->Function, CapabilitiesPointer + 0x08, 0x40);
+    }
+
+    // Set bit 0 of the Message Control register to enable MSI
+    
+    MessageControlRegister |= 1;
+    PCI_SetupWrite16Bit(IHDABusDeviceFunction->Bus, IHDABusDeviceFunction->Device, IHDABusDeviceFunction->Function, CapabilitiesPointer + 0x02, MessageControlRegister);
 
 }
 
@@ -617,7 +619,7 @@ void IHDA_CreateSpeakerPinAndDACAudioPath() {
 
                                 bool SupportedPCMAndSizeRatesConditionsMet = (SupportedPCMAndSizeRates & (1 << 17)) && (SupportedPCMAndSizeRates & (1 << 6));
                                 bool SupportedStreamFormatsConditionsMet = SupportedStreamFormats & 1;
-                                bool AudioWidgetCapabilitiesConditionsMet = Response & 1;
+                                bool AudioWidgetCapabilitiesConditionsMet = NIDAudioWidgetCapabilities & 1;
 
                                 if (SupportedPCMAndSizeRatesConditionsMet && SupportedStreamFormatsConditionsMet && AudioWidgetCapabilitiesConditionsMet) {
 
@@ -681,7 +683,7 @@ void IHDA_CreateSpeakerPinAndDACAudioPath() {
                                 IHDA_Submit12BitIDVerb(SelectedCAd, NodeToSearch, IHDA_SET_CONNECTION_SELECT_CONTROL_VERB_ID, j);
                             }
 
-                            if (DACFound) return;  // A valid DAC has been found and configured - let's get out of this mess!
+                            if (DACFound) return;  // A valid DAC has been found - let's get out of this mess!
 
                             /* If the connection list is a mixer's, we must unmute the mixer at the index of the valid node
                                that was found in its list. That's how it's unmuted */
@@ -806,12 +808,96 @@ void IHDA_UnmuteNode(uint8_t NID, uint8_t IndexToUnmute) {
 }
 
 
-uint32_t IHDA_OutputStreamDescriptorRead(uint8_t RegisterSizeID, uint8_t StreamID, uint32_t Offset) {
+void IHDA_ConfigureOutputStream1() {
+
+    // Now let's configure Output Stream Descriptor 1 with a base profile of 48 kHz 16-bit stereo audio
+    // This profile is supported by virtually every codec
+    // We'll resample any audio data that presents with other attributes
+
+    // Before writing to the stream registers, we must reset the stream
+    // To reset, set SDnCTL.SRST (bit 0), read it back, then clear it and read it back again
+
+    uint32_t SDnCTL = IHDA_OutputStreamDescriptorRead(IHDA_24_BIT_REGISTER, 1, IHDA_SDNCTL_REGISTER_OFFSET);
+    SDnCTL |= 1;
+    IHDA_OutputStreamDescriptorWrite(IHDA_24_BIT_REGISTER, 1, IHDA_SDNCTL_REGISTER_OFFSET, SDnCTL);
+
+    do {
+        SDnCTL = IHDA_OutputStreamDescriptorRead(IHDA_24_BIT_REGISTER, 1, IHDA_SDNCTL_REGISTER_OFFSET);
+    } while (!(SDnCTL & 1));
+
+    SDnCTL &= ~1;
+    IHDA_OutputStreamDescriptorWrite(IHDA_24_BIT_REGISTER, 1, IHDA_SDNCTL_REGISTER_OFFSET, SDnCTL);
+
+    do {
+        SDnCTL = IHDA_OutputStreamDescriptorRead(IHDA_24_BIT_REGISTER, 1, IHDA_SDNCTL_REGISTER_OFFSET);
+    } while (SDnCTL & 1);
+
+    // Enable an interrupt to be triggered by IOC by setting SDnCTL.IOCE (bit 2)
+
+    SDnCTL |= (1 << 2);
+
+    // Assign the Stream Descriptor its stream ID of 1 in SDnCTL.STRM (23:20)
+
+    SDnCTL |= (1 << 20);
+    IHDA_OutputStreamDescriptorWrite(IHDA_24_BIT_REGISTER, 1, IHDA_SDNCTL_REGISTER_OFFSET, SDnCTL);
+
+    // Now we configure the stream format (SDnFMT)
+    // For 48 kHz 16-bit stereo audio, we can hardcode SDnFMT
+    
+    // Bit 14 = Sample Base Rate (BASE) -> 0 for 48 kHz
+    // Bits 13:11 = Sample Base Rate Multiple (MULT) -> 000 for 48 kHz
+    // Bits 10:8 = Sample Base Rate Divisor (DIV) -> 000 for 48 kHz
+    // Bit 7 = Reserved
+    // Bits 6:4 = Bits per Sample (BITS) -> 001 for 16 bits
+    // Bits 3:0 = Number of Channels (CHAN) -> 0001 for 2 channels (stereo)
+
+    IHDA_OutputStreamDescriptorWrite(IHDA_16_BIT_REGISTER, 1, IHDA_SDNFMT_REGISTER_OFFSET, SDnFMT);
+
+    // Next, write the lower 32 bits of the address of our BDL to SDnBDPL
+    // And if the controller supports 64-bit addressing, write the upper 32 bits to SDnBDPU
+    // Bits 6:0 in SDnBDPL are hardwired to 0 to enforce 128-byte alignment
+
+    uint32_t SDnBDPL = (uint32_t) (uintptr_t) &OutputStream1BDL;
+    IHDA_OutputStreamDescriptorWrite(IHDA_32_BIT_REGISTER, 1, IHDA_SDNBDPL_REGISTER_OFFSET, SDnBDPL);
+
+    uint16_t GCAP = PCI_Read16Bit(IHDABAR0, IHDA_GCAP_REGISTER_OFFSET);
+
+    if (GCAP & 1) {
+
+        uint32_t SDnBDPU = (uint32_t) (((uintptr_t) &OutputStream1BDL) >> 32);
+        IHDA_OutputStreamDescriptorWrite(IHDA_32_BIT_REGISTER, 1, IHDA_SDNBDPU_REGISTER_OFFSET, SDnBDPU);
+
+    } else if (((uintptr_t) &OutputStream1BDL) >= 0x100000000) {
+
+        printf("IHDA_InitialiseOutputStream: The IHDA controller doesn't support 64-bit addressing, and the BDL for Output Stream %d is placed at a 64-bit address!\n", 1);
+        printf("IHDA_InitialiseOutputStream: Please place it below the 4GB boundary. Thanks :)\n");
+        while(true);
+
+    }
+
+    // Now, write the length of the cyclic buffer (all BDLE buffer sizes combined) to SDnCBL
+    // That's just a fixed number of pages that we already set up for out stream buffer -> that IS our cyclic buffer!
+
+    uint32_t SDnCBL = OutputStreamBufferPages * PAGING_PAGE_SIZE;
+    IHDA_OutputStreamDescriptorWrite(IHDA_32_BIT_REGISTER, 1, IHDA_SDNCBL_REGISTER_OFFSET, SDnCBL);
+
+    // Finally, write the last valid index of the BDL to SDnLVI
+    // For a 2-entry-minimum BDL, this is at least 1
+
+    uint16_t SDnLVI = 1;
+    IHDA_OutputStreamDescriptorWrite(IHDA_16_BIT_REGISTER, 1, IHDA_SDNLVI_REGISTER_OFFSET, SDnLVI);
+
+    // The stream's characteristics are now configured!
+
+}
+
+
+uint32_t IHDA_OutputStreamDescriptorRead(IHDA_RegisterSize_t RegisterSize, uint8_t StreamID, uint32_t Offset) {
 
     uint64_t FinalOffset = OutputStreamDescriptorsStartingAddress + StreamID * 0x20 + Offset;
     uint32_t FinalValue;
 
-    switch (RegisterSizeID) {
+    switch (RegisterSize) {
         case IHDA_8_BIT_REGISTER:
             FinalValue = *(volatile uint8_t*) FinalOffset;
             break;
@@ -832,11 +918,11 @@ uint32_t IHDA_OutputStreamDescriptorRead(uint8_t RegisterSizeID, uint8_t StreamI
 }
 
 
-void IHDA_OutputStreamDescriptorWrite(uint8_t RegisterSizeID, uint8_t StreamID, uint64_t Offset, uint32_t Value) {
+void IHDA_OutputStreamDescriptorWrite(IHDA_RegisterSize_t RegisterSize, uint8_t StreamID, uint64_t Offset, uint32_t Value) {
 
     uint64_t FinalOffset = OutputStreamDescriptorsStartingAddress + StreamID * 0x20 + Offset;
 
-    switch (RegisterSizeID) {
+    switch (RegisterSize) {
         case IHDA_8_BIT_REGISTER:
             *(volatile uint8_t*) FinalOffset = (uint8_t) Value;
             break;
@@ -905,36 +991,114 @@ uint32_t IHDA_SubmitVerbStub(uint32_t Verb) {
 
 void IHDA_PlayWAV(const char* FilePath) {
 
-    // Read only the first sector of the WAV file to get the header up to BitsPerSample
-    // We will use this information to set up our stream using the controller
-    // The minimum size of one sector today is 512 bytes, which our desired header info is well within
+    // Read only the first cluster of the WAV file to get the header up to BitsPerSample
+    // We will use this information to resample the audio to 48 kHz 16-bit stereo if it's different
+    // The minimum size of one cluster today is 512 bytes, which our desired header info is well within
 
     FAT32_BPB_t* BPB = FAT32_GetBPB();
     FAT32_DirectoryEntry_t* DirectoryEntry = FAT32_GetDirectoryEntry(FilePath);
 
     if (!DirectoryEntry) {
-        printf("IHDA_PlayWAV: Couldn't find %s.\n");
+        printf("IHDA_PlayWAV: Couldn't find %s.\n", FilePath);
         return;
     }
 
-    uint32_t FirstCluster = (DirectoryEntry->FirstClusterHigh << 16) | DirectoryEntry->FirstClusterLow;
-    uint32_t StartingSector = FAT32_ClusterToSector(FirstCluster);
+    uint32_t CurrentCluster = (DirectoryEntry->FirstClusterHigh << 16) | DirectoryEntry->FirstClusterLow;
+    uint32_t StartingSector = FAT32_ClusterToSector(CurrentCluster);
 
     // We'll overwrite the header later when we fill the buffer with actual audio samples
 
-    IHDA_WAVHeader_t* WAVHeader = OutputStreamBuffer;
+    IHDA_WAVHeader_t* WAVHeader = HelperBuffer;
 
-    FAT32_DriveRead(StartingSector, 1, WAVHeader);
+    FAT32_DriveRead(StartingSector, BPB->SectorsPerCluster, HelperBuffer);
 
     // Now WAVHeader is full of information about the WAV file!
 
-    // Will continue here Inshallah :)
+    // The Stream Descriptor must be reconfigured everytime the RUN bit was set or if we're playing for the first time
+    
+    IHDA_ConfigureOutputStream1();
 
-    // Free our buffer pages
+    // Read the WAV file cluster by cluster to find the "data" section - the actual audio data
+    // The first cluster's already been read into our HelperBuffer
+    /* What we find will be the first offset (into the first cluster containing the audio data)
+       that we will start copying audio data from */
 
-    for (uint8_t i = 0; i < OutputStreamBufferPages; i++) {
-        void* PageAddress = (void*) (((uintptr_t) OutputStreamBuffer) + i * PAGING_PAGE_SIZE);
-        Paging_FreePage(PageAddress);
+    uint32_t AudioDataReadOffsetInCluster = 0;
+
+    // The "WAVE" section begins 12 bytes from the beginning of the header
+    // The first chunk (i.e. the "fmt " one) begins right after this
+
+    uint32_t OffsetInFile = 12;
+    uint32_t ClusterSize = BPB->SectorsPerCluster * BPB->BytesPerSector;
+
+    while (OffsetInFile < DirectoryEntry->FileSize) {
+
+        uint32_t OffsetInCluster = OffsetInFile % ClusterSize;
+        char* ChunkID = (char*) (((uintptr_t) HelperBuffer) + OffsetInCluster);
+        uint32_t ChunkSize = *(uint32_t*) (((uintptr_t) HelperBuffer) + OffsetInCluster + 4); // Right after chunk ID
+
+        if (memcmp(ChunkID, "data", 4) == 0) {
+            AudioDataReadOffsetInCluster = OffsetInCluster + 8;  // Skip chunk ID (4 bytes) + the chunk size integer (4 bytes)
+            break;
+        }
+
+        // If we couldn't find "data" in this cluster, read the next one in
+        // Calculate how many bytes we advance by and how many more clusters we need to read in to get there
+
+        uint32_t BytesToAdvance = 8 + ChunkSize;  // ChunkID + ChunkSize = 8 bytes, then add the chunk itself
+        int16_t SpaceRemainingInCluster = ClusterSize - OffsetInCluster;
+        uint64_t BytesToAdvanceAfterCurrentCluster = (BytesToAdvance > SpaceRemainingInCluster) ? (BytesToAdvance - SpaceRemainingInCluster) : 0;
+        uint32_t ClustersToAdvance = BytesToAdvanceAfterCurrentCluster / ClusterSize + ((BytesToAdvanceAfterCurrentCluster % ClusterSize) ? 1 : 0);
+
+        OffsetInFile += BytesToAdvance;
+
+        for (uint32_t i = 0; i < ClustersToAdvance; i++) {
+            CurrentCluster = FAT32_GetNextCluster(CurrentCluster);
+        }
+        
+        StartingSector = FAT32_ClusterToSector(CurrentCluster);
+        FAT32_DriveRead(StartingSector, BPB->SectorsPerCluster, HelperBuffer);
+
     }
+
+    if (AudioDataReadOffsetInCluster == 0) {
+        printf("IHDA_PlayWAV: Couldn't find valid WAV data in %s.\n", FilePath);
+        return;
+    }
+
+    // Alright, now let's fill the two BDL buffers with our first load of audio data!
+    // When BDLE 0 sends an IOC, we'll fill it with new data in the interrupt stub
+    // And when BDLE 1 sends an IOC, we'll fill THAT with new data
+
+    
+
+    // Begin playback by setting SDnCTL.RUN (bit 1):)
+    
+    uint32_t SDnCTL = IHDA_OutputStreamDescriptorRead(IHDA_24_BIT_REGISTER, 1, IHDA_SDNCTL_REGISTER_OFFSET);
+    SDnCTL |= (1 << 1);
+    IHDA_OutputStreamDescriptorWrite(IHDA_24_BIT_REGISTER, 1, IHDA_SDNCTL_REGISTER_OFFSET, SDnCTL);
+
+    // Free the page containing the directory entry of our WAV file
+    // fclose() from Libraries.c would normally do this for us, but we decided to read the WAV file into memory our own way
+    // We didn't use fread() because we implemented it such that it reads the ENTIRE file into memory
+    // WAV files are pretty big so we didn't want to do that this time
+
+    Paging_FreePage((void*) Paging_PageAlignRoundDown((uintptr_t) DirectoryEntry));
+
+}
+
+
+
+// Our interrupt handler for when one of our BDL buffer halves finish playing
+
+void IHDA_Vector64InterruptHandlePassover() {
+
+    // Clear the buffer completion interrupt bit for Output Stream 1 (SD1STS.BCIS - bit 2) by writing 1 to it
+    /* Since SDnSTS is write-to-clear, OR-ing a 1 and then writing the same value back will set 1s to other RW1C bits,
+       clearing them unintentionally! */
+    // However, writing 0 to them won't do anything
+    // Therefore, we send a uint8_t with only bit 2 set and with all the others clear
+    
+    IHDA_OutputStreamDescriptorWrite(IHDA_8_BIT_REGISTER, 1, IHDA_SDNSTS_REGISTER_OFFSET, 1 << 2);
 
 }

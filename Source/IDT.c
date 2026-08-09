@@ -6,6 +6,7 @@
 
 // These header files contain our interrupt handlers, scattered across different sources.
 #include "Include/Keyboard.h"
+#include "Include/IHDA.h"
 
 
 IDT_Entry_t IDT[256];
@@ -20,6 +21,7 @@ void IDT_Initialise() {
     // Fill IDT with interrupt entries
     IDT_SetGate(14, ISR_14);            // Page fault
     IDT_SetGateIOAPIC(33, ISR_33);      // Keyboard
+    IDT_SetGate(64, ISR_64); // or 0x40 // Intel High Definition Audio interrupt on buffer playback completion
 
     // Load IDT using descriptor
     IDT_Descriptor.Limit = sizeof(IDT_Entry_t) * 256 - 1;
@@ -87,5 +89,12 @@ void IDT_Vector14ExceptionHandler(uint64_t ErrorCode) {
 void IDT_Vector33InterruptHandler() {
     uint8_t Scancode = inb(0x60);
     Keyboard_Vector33InterruptHandlePassover(Scancode);
+    APIC_SendEOI();
+}
+
+// Intel High Definition Audio IOC (Interrupt on Completion)
+
+void IDT_Vector64InterruptHandler() {
+    IHDA_Vector64InterruptHandlePassover();
     APIC_SendEOI();
 }

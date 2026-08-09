@@ -23,7 +23,7 @@ void FAT32_Initialise(void (*FAT32_DriveReadArgument), uint64_t BytesPerBlock) {
     // The GPT header is located in LBA 1 in the storage device
     // Parse it to find the FAT32 partition
 
-    GPTHeader_t* GPTHeader = Paging_AllocatePage();
+    FAT32_GPTHeader_t* GPTHeader = Paging_AllocatePage();
    
     FAT32_DriveRead(1, 1, GPTHeader);
 
@@ -35,12 +35,12 @@ void FAT32_Initialise(void (*FAT32_DriveReadArgument), uint64_t BytesPerBlock) {
     // Let's work with one page of entries so we don't need to dynamically allocate anything
     // A partition entry will never overlap from one block into the next
 
-    GPTPartitionEntry_t* GPTPartitionEntries = Paging_AllocatePage();
+    FAT32_GPTPartitionEntry_t* GPTPartitionEntries = Paging_AllocatePage();
     memset(GPTPartitionEntries, 0, PAGING_PAGE_SIZE);
 
     // Look for the partition with an EFI System Partition GUID, which = FAT32
 
-   uint8_t EFISystemPartitionGUID[16] = {0x28, 0x73, 0x2A, 0xC1, 0x1F, 0xF8, 0xD2, 0x11, 
+    uint8_t EFISystemPartitionGUID[16] = {0x28, 0x73, 0x2A, 0xC1, 0x1F, 0xF8, 0xD2, 0x11, 
                                          0xBA, 0x4B, 0x00, 0xA0, 0xC9, 0x3E, 0xC9, 0x3B};
 
 
@@ -124,7 +124,7 @@ uint32_t FAT32_GetNextCluster(uint32_t Cluster) {
 
     // Only the lower 28 bits of the entry contain the actual number of the next cluster
 
-    return *CurrentClusterEntryAddress & 0x0FFFFFFF;
+    return *CurrentClusterEntryAddress & 0xFFFFFFF;
 
 }
 
@@ -218,9 +218,10 @@ FAT32_DirectoryEntry_t* FAT32_FindInDirectory(uint32_t DirectoryFirstCluster, co
 
     uint32_t EntriesPerCluster = BPB->SectorsPerCluster * BPB->BytesPerSector / sizeof(FAT32_DirectoryEntry_t);
     uint32_t CurrentCluster = DirectoryFirstCluster;
+    uint8_t ClusterPages = Paging_BytesToPages(BPB->SectorsPerCluster * BPB->BytesPerSector);
 
-    FAT32_DirectoryEntry_t* DirectoryEntries = Paging_AllocatePage();
-    memset(DirectoryEntries, 0, PAGING_PAGE_SIZE);
+    FAT32_DirectoryEntry_t* DirectoryEntries = Paging_AllocateContiguousPages(ClusterPages);
+    memset(DirectoryEntries, 0, ClusterPages * PAGING_PAGE_SIZE);
 
     while (CurrentCluster < FAT32_EOF) {
 
@@ -334,7 +335,7 @@ FAT32_DirectoryEntry_t* FAT32_FindInDirectory(uint32_t DirectoryFirstCluster, co
             // If we've found the file or folder, return its directory entry
 
             /* The entire page containing this specific entry is kept switched on
-                - it is up to the function user to do what they want with it. */
+               - it is up to the function user to do what they want with it. */
 
         }
 
@@ -354,7 +355,6 @@ FAT32_DirectoryEntry_t* FAT32_FindInDirectory(uint32_t DirectoryFirstCluster, co
 void FAT32_FormatFileName(const char* FileName, char* Destination) {
 
     // Format the FileName into the 8.3 FAT32 format
-    // Leave a space at the end as strangely the match only works with that...
 
     char FormattedFileName[11];
     memset(FormattedFileName, ' ', 11);

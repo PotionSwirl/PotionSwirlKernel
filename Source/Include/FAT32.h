@@ -26,7 +26,7 @@ typedef struct __attribute__((packed)) {
     uint32_t NumberOfPartitionEntries;
     uint32_t SizeOfPartitionEntry;
     uint32_t PartitionEntriesCRC32;
-} GPTHeader_t;
+} FAT32_GPTHeader_t;
 
 typedef struct __attribute__((packed)) {
     char PartitionTypeGUID[16];       // Offset 0: Unique type GUID (Look for Basic Data)
@@ -35,7 +35,7 @@ typedef struct __attribute__((packed)) {
     uint64_t EndingLBA;               // Offset 40: The last sector (inclusive)
     uint64_t Attributes;              // Offset 48: Attribute flags (e.g. bootable)
     char PartitionName[36];           // Offset 56: UTF-16LE partition name
-} GPTPartitionEntry_t;
+} FAT32_GPTPartitionEntry_t;
 
 typedef struct __attribute__((packed)) {
     uint8_t  BootJumpInstruction[3];

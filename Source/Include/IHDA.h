@@ -1,11 +1,14 @@
 #pragma once
 
 #include <stdint.h>
+#include "PCI.h"
 
 // Global capabilities, status and control register offsets
 #define IHDA_GCAP_REGISTER_OFFSET       0x00
 #define IHDA_GCTL_REGISTER_OFFSET       0x08
 #define IHDA_STATESTS_REGISTER_OFFSET   0x0E
+#define IHDA_INTCTL_REGISTER_OFFSET     0x20
+#define IHDA_INTSTS_REGISTER_OFFSET     0x24
 #define IHDA_CORBLBASE_REGISTER_OFFSET  0x40
 #define IHDA_CORBUBASE_REGISTER_OFFSET  0x44
 #define IHDA_CORBWP_REGISTER_OFFSET     0x48
@@ -20,6 +23,7 @@
 
 // Stream descriptor register offsets
 #define IHDA_SDNCTL_REGISTER_OFFSET     0x00
+#define IHDA_SDNSTS_REGISTER_OFFSET     0x03
 #define IHDA_SDNCBL_REGISTER_OFFSET     0x08
 #define IHDA_SDNLVI_REGISTER_OFFSET     0x0C
 #define IHDA_SDNFMT_REGISTER_OFFSET     0x12
@@ -57,11 +61,12 @@
 #define IHDA_SELECTOR_TYPE                                0x03
 #define IHDA_PIN_TYPE                                     0x04
 
-// Register size indicators
-#define IHDA_8_BIT_REGISTER             0
-#define IHDA_16_BIT_REGISTER            1
-#define IHDA_24_BIT_REGISTER            2
-#define IHDA_32_BIT_REGISTER            3
+typedef enum {
+    IHDA_8_BIT_REGISTER,
+    IHDA_16_BIT_REGISTER,
+    IHDA_24_BIT_REGISTER,
+    IHDA_32_BIT_REGISTER
+} IHDA_RegisterSize_t;
 
 // BDL Entry
 typedef struct __attribute__((packed)) {
@@ -69,12 +74,6 @@ typedef struct __attribute__((packed)) {
     uint32_t Length;
     uint32_t IOCAndReserved;
 } IHDA_BDLE_t;
-
-// BDL
-typedef struct __attribute__((packed)) {
-    IHDA_BDLE_t BDLE0;
-    IHDA_BDLE_t BDLE1;
-} IHDA_BDL_t;
 
 // WAV file header
 typedef struct __attribute__((packed)) {
@@ -94,19 +93,22 @@ typedef struct __attribute__((packed)) {
 } IHDA_WAVHeader_t;
 
 // Functions
-void IHDA_Initialise(volatile uint8_t* IHDABAR0Argument);
+void IHDA_Initialise(volatile uint8_t* IHDABAR0Argument, PCI_BusDeviceFunction_t* IHDABusDeviceFunctionArgument);
 void IHDA_TakeControllerOutOfReset();
 void IHDA_FindCodec();
 void IHDA_InitialiseCORB();
 void IHDA_InitialiseRIRB();
 void IHDA_InitialiseBDLs();
-void IHDA_InitialiseOutputStream();
+void IHDA_InitialiseOutputStreamBuffer();
+void IHDA_InitialiseOutputStream1Interrupt();
 void IHDA_CreateSpeakerPinAndDACAudioPath();
 void IHDA_InitialiseSpeakerPinAndDAC();
 void IHDA_UnmuteNode(uint8_t NID, uint8_t IndexToUnmute);
-uint32_t IHDA_OutputStreamDescriptorRead(uint8_t RegisterSizeID, uint8_t StreamID, uint32_t Offset);
-void IHDA_OutputStreamDescriptorWrite(uint8_t RegisterSizeID, uint8_t StreamID, uint64_t Offset, uint32_t Value);
+void IHDA_ConfigureOutputStream1();
+uint32_t IHDA_OutputStreamDescriptorRead(IHDA_RegisterSize_t RegisterSize, uint8_t StreamID, uint32_t Offset);
+void IHDA_OutputStreamDescriptorWrite(IHDA_RegisterSize_t RegisterSize, uint8_t StreamID, uint64_t Offset, uint32_t Value);
 uint32_t IHDA_Submit4BitIDVerb(uint8_t CAd, uint8_t NID, uint8_t VerbID, uint16_t Payload);
 uint32_t IHDA_Submit12BitIDVerb(uint8_t CAd, uint8_t NID, uint16_t VerbID, uint8_t Payload);
 uint32_t IHDA_SubmitVerbStub(uint32_t Verb);
 void IHDA_PlayWAV(const char* FilePath);
+void IHDA_Vector64InterruptHandlePassover();

@@ -6,6 +6,7 @@
 #include "Include/APIC.h"
 #include "Include/Graphics.h"
 #include "Include/CPU.h"
+#include "Include/ACPI.h"
 
 
 // The structures that keep track of our pages
@@ -43,11 +44,12 @@ void Paging_Initialise(BootInfo_t* BootInfo) {
     while (CurrentMemoryDescriptor < LastMemoryDescriptor) {
 
         if  (CurrentMemoryDescriptor->Type == EfiConventionalMemory
-            || CurrentMemoryDescriptor->Type == EfiLoaderCode
-            || CurrentMemoryDescriptor->Type == EfiLoaderData
-            || CurrentMemoryDescriptor->Type == EfiBootServicesCode
-            || CurrentMemoryDescriptor->Type == EfiBootServicesData
-            || CurrentMemoryDescriptor->Type == EfiACPIReclaimMemory) {
+            || CurrentMemoryDescriptor->Type == EfiLoaderData       // This holds our kernel code AND memory map so our memory map is safe
+            || CurrentMemoryDescriptor->Type == EfiBootServicesData // This holds our old stack from bootx64.efi but we should switch to our own soon!
+            || CurrentMemoryDescriptor->Type == EfiACPIReclaimMemory
+            || CurrentMemoryDescriptor->Type == EfiMemoryMappedIO
+            || CurrentMemoryDescriptor->Type == EfiRuntimeServicesCode
+            || CurrentMemoryDescriptor->Type == EfiRuntimeServicesData) {
 
             PhysicalAddress = (void*) Paging_PageAlignRoundDown(CurrentMemoryDescriptor->PhysicalStart);
             Paging_MapMemory(PhysicalAddress, PhysicalAddress, PAGING_PAGE_PRESENT | PAGING_PAGE_WRITABLE, CurrentMemoryDescriptor->NumberOfPages);
@@ -61,20 +63,20 @@ void Paging_Initialise(BootInfo_t* BootInfo) {
     // Framebuffer
 
     PhysicalAddress = (void*) Paging_PageAlignRoundDown(BootInfo->GraphicsOutputProtocol->Mode->FrameBufferBase);
-    Paging_MapMemory(PhysicalAddress, PhysicalAddress, PAGING_PAGE_PRESENT | PAGING_PAGE_WRITABLE, BytesToPages(BootInfo->GraphicsOutputProtocol->Mode->FrameBufferSize));
+    Paging_MapMemory(PhysicalAddress, PhysicalAddress, PAGING_PAGE_PRESENT | PAGING_PAGE_WRITABLE, Paging_BytesToPages(BootInfo->GraphicsOutputProtocol->Mode->FrameBufferSize));
 
     // ECAM
 
-    PhysicalAddress = (void*) BootInfo->ECAMBaseAddress;
-    Paging_MapMemory(PhysicalAddress, PhysicalAddress, PAGING_PAGE_PRESENT | PAGING_PAGE_WRITABLE | PAGING_PAGE_WRITE_THROUGH | PAGING_PAGE_CACHE_DISABLE | PAGING_PAGE_NO_EXECUTE, BytesToPages(BootInfo->ECAMSize));
+    PhysicalAddress = (void*) ACPI_GetECAMBaseAddress();
+    Paging_MapMemory(PhysicalAddress, PhysicalAddress, PAGING_PAGE_PRESENT | PAGING_PAGE_WRITABLE | PAGING_PAGE_CACHE_DISABLE | PAGING_PAGE_NO_EXECUTE, Paging_BytesToPages(ACPI_GetECAMSize()));
 
     // APIC
 
-    PhysicalAddress = (void*) (uint64_t) BootInfo->IOAPICAddress;
-    Paging_MapPage(PhysicalAddress, PhysicalAddress, PAGING_PAGE_PRESENT | PAGING_PAGE_WRITABLE | PAGING_PAGE_WRITE_THROUGH | PAGING_PAGE_CACHE_DISABLE | PAGING_PAGE_NO_EXECUTE);
+    PhysicalAddress = (void*) (uint64_t) ACPI_GetIOAPICAddress();
+    Paging_MapPage(PhysicalAddress, PhysicalAddress, PAGING_PAGE_PRESENT | PAGING_PAGE_WRITABLE | PAGING_PAGE_CACHE_DISABLE | PAGING_PAGE_NO_EXECUTE);
 
     PhysicalAddress = (void*) APIC_GetBase();
-    Paging_MapPage(PhysicalAddress, PhysicalAddress, PAGING_PAGE_PRESENT | PAGING_PAGE_WRITABLE | PAGING_PAGE_WRITE_THROUGH | PAGING_PAGE_CACHE_DISABLE | PAGING_PAGE_NO_EXECUTE);
+    Paging_MapPage(PhysicalAddress, PhysicalAddress, PAGING_PAGE_PRESENT | PAGING_PAGE_WRITABLE | PAGING_PAGE_CACHE_DISABLE | PAGING_PAGE_NO_EXECUTE);
 
     // Enable no-execute flag
 
@@ -158,6 +160,14 @@ void Paging_MapPage(void* VirtualAddress, void* PhysicalAddress, uint64_t Flags)
 
     // Plug the address into the page table entry
     PT[PTIndex] = ((uint64_t) PhysicalAddress) | Flags | PAGING_PAGE_PRESENT;
+
+    // Invalidate any old mappings
+    asm volatile (
+        "INVLPG [%0]"
+        :
+        : "r"(VirtualAddress)
+        : "memory"
+    );
 
 }
 
@@ -305,7 +315,7 @@ void MemoryBitmapInitialise(MemoryInfo_t* MemoryInfo) {
 
     uint64_t MemoryBitmapStartingPage = ((uint64_t) MemoryBitmap) / PAGING_PAGE_SIZE;
     
-    for (uint64_t i = 0; i < BytesToPages(MemoryBitmapSize); i++) {
+    for (uint64_t i = 0; i < Paging_BytesToPages(MemoryBitmapSize); i++) {
         Paging_MemoryBitmapSet(MemoryBitmapStartingPage + i);
         FreePages--;
     }
@@ -331,7 +341,7 @@ bool Paging_MemoryBitmapTestPage(uint64_t Page) {
 // Paging math helpers
 
 uint64_t PageAlignRoundUp(uint64_t Value) {
-    return (Value + 0xFFF) & ~0xFFF;
+    return (Value + PAGING_PAGE_SIZE - 1) & ~(PAGING_PAGE_SIZE - 1);
 }
 
 
@@ -340,13 +350,64 @@ uint64_t Paging_PageAlignRoundDown(uint64_t Value) {
 }
 
 
-uint64_t BytesToPages(uint64_t Bytes) {
+uint64_t Paging_BytesToPages(uint64_t Bytes) {
     return (Bytes + PAGING_PAGE_SIZE - 1) / PAGING_PAGE_SIZE;
 }
 
 
 uint64_t Paging_GetTotalPages() {
     return TotalPages;
+}
+
+
+void* Paging_AllocateContiguousPages(uint64_t Pages) {
+
+    // Loop through all pages to find consecutive free pages
+
+    for (uint64_t i = 0; i < Paging_GetTotalPages(); i++) {
+
+        // Check if a page is free
+        // E.g. page 5
+
+        bool ConsecutiveFreePagesFound = true;
+
+        if (!(Paging_MemoryBitmapTestPage(i))) {
+
+            // If it's free, check whether the relevant number of pages after the first are free too
+            // E.g. pages 6, 7 and 8 if we want 4 contiguous pages
+
+            for (uint64_t j = i + 1; j <= i + Pages - 1; j++) {
+
+                if (Paging_MemoryBitmapTestPage(j)) {
+                    ConsecutiveFreePagesFound = false;
+                    break;
+                }
+                
+            }
+
+        } else {
+
+            ConsecutiveFreePagesFound = false;
+
+        }
+
+        // If we've found consecutive pages, reserve them all
+        // Then, get the address at the beginning of this new contiguous block of memory
+
+        if (ConsecutiveFreePagesFound) {
+            
+            for (uint64_t j = i; j <= i + Pages - 1; j++) {
+                Paging_MemoryBitmapSet(j);
+            }
+
+            return ((void*) (i * PAGING_PAGE_SIZE));
+
+        }
+
+    }
+
+    return NULL;
+
 }
 
 

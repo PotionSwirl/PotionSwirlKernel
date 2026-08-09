@@ -35,6 +35,7 @@ void Paging_MemoryBitmapClear(uint64_t Page);
 bool Paging_MemoryBitmapTestPage(uint64_t Page);
 uint64_t PageAlignRoundUp(uint64_t Value);
 uint64_t Paging_PageAlignRoundDown(uint64_t Value);
-uint64_t BytesToPages(uint64_t Bytes);
+uint64_t Paging_BytesToPages(uint64_t Bytes);
 uint64_t Paging_GetTotalPages();
+void* Paging_AllocateContiguousPages(uint64_t Pages);
 void Paging_Vector14ExceptionHandlePassover(uint64_t PageFaultAddress, uint64_t ErrorCode);
