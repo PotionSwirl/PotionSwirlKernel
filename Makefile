@@ -81,7 +81,7 @@ Run:
   	-device usb-storage,bus=xhci.0,drive=usbboot,bootindex=1
 
 Commit:
-	git remote set-url origin https://github.com/PotionSwirl/Brainrot26.git
+	git remote set-url origin https://github.com/PotionSwirl/PotionSwirlKernel.git
 	git add .
 	git commit -m "$(Message)"
 	git push -u origin main

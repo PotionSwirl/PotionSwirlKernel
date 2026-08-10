@@ -21,7 +21,6 @@
 
 static BootInfo_t BootInfoCopy;
 static EFI_GRAPHICS_OUTPUT_PROTOCOL GraphicsOutputProtocolCopy;
-static EFI_MEMORY_DESCRIPTOR* MemoryMapCopy;
 
 BootInfo_t* BootInfo;
 

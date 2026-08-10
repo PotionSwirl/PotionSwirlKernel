@@ -9,7 +9,7 @@
 static uint64_t TSCFrequency;
 
 
-uint32_t CPU_GetCPUID(uint32_t EAXInput, uint8_t RegisterToReturn) {
+uint32_t CPU_GetCPUID(uint32_t EAXInput, CPU_SelectedRegister_t RegisterToReturn) {
 
     uint32_t EAX, EBX, ECX, EDX;
 

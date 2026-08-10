@@ -1067,12 +1067,12 @@ void IHDA_PlayWAV(const char* FilePath) {
     }
 
     // Alright, now let's fill the two BDL buffers with our first load of audio data!
-    // When BDLE 0 sends an IOC, we'll fill it with new data in the interrupt stub
-    // And when BDLE 1 sends an IOC, we'll fill THAT with new data
+    // When BDLE 0 sends an IOC, we'll fill it with new data in the interrupt stub while BDLE 1 is playing
+    // And when BDLE 1 sends an IOC, we'll fill THAT with new data while BDLE 0 is playing
 
     
 
-    // Begin playback by setting SDnCTL.RUN (bit 1):)
+    // Begin playback by setting SDnCTL.RUN (bit 1) :)
     
     uint32_t SDnCTL = IHDA_OutputStreamDescriptorRead(IHDA_24_BIT_REGISTER, 1, IHDA_SDNCTL_REGISTER_OFFSET);
     SDnCTL |= (1 << 1);
