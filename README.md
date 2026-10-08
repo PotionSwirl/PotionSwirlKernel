@@ -1,2 +1,2 @@
 # PotionSwirlKernel
-An attempt to write my own kernel. I left an incomplete Intel High Definition Audio driver because I can use Linux to prank people instead 😅.
+An attempt to write my own kernel for an x64 computer. I KNOW Linux is available for that, but writing my own drivers teaches me a lot and is just...fun 💝.
