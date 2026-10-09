@@ -26,7 +26,7 @@ BOOT:
 
 Find:
 	find Source -type d | sed 's|Source|Build|' | xargs mkdir -p
-	rm -r Build/include
+	rm -r Build/Include
 
 # Compilation rule - compile only when the C/ASM file has changed
 
@@ -43,10 +43,11 @@ Kernel.elf: $(OBJ_FILES)
 # Write files to real USB in UEFI format
 REAL_USB:
 	make
-	sudo mount -t drvfs D: /mnt/d
-	sudo cp Build/Bootx64.efi /mnt/d/EFI/Boot/Bootx64.efi
-	sudo cp Build/Kernel.elf /mnt/d/Kernel.elf
-	sudo umount /mnt/d
+	sudo mkdir -p /mnt/e
+	sudo mount -t drvfs E: /mnt/e
+	sudo cp Build/Bootx64.efi /mnt/e/EFI/Boot/Bootx64.efi
+	sudo cp Build/Kernel.elf /mnt/e/Kernel.elf
+	sudo umount /mnt/e
 
 QEMU_USB:
 	make
