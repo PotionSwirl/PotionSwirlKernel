@@ -49,12 +49,20 @@ static uint8_t OutputStreamBufferPages = 4;
 
 static alignas(128) IHDA_BDLE_t OutputStream1BDL[2];
 
-// Our primary nodes
-uint8_t AFGNID;
-uint8_t SpeakerPinNID;
-uint8_t DACNID;
+// To determine which buffer in the BDL has finished playing
+static bool BDLE0FinishedPlaying;
 
-uint8_t ISS;  // Input Streams Supported
+// Our primary nodes
+static uint8_t AFGNID;
+static uint8_t SpeakerPinNID;
+static uint8_t DACNID;
+
+static uint8_t ISS;  // Input Streams Supported
+
+// Where in a WAV file cluster we have currently reached in the process of reading in audio data
+uint32_t AudioDataReadOffsetInCluster = 0;
+void* OutputStreamBufferCursor;
+uint32_t StartingSectorForStreaming, CurrentClusterForStreaming;
 
 
 void IHDA_Initialise(volatile uint8_t* IHDABAR0Argument, PCI_BusDeviceFunction_t* IHDABusDeviceFunctionArgument) {
@@ -305,12 +313,13 @@ void IHDA_InitialiseOutputStreamBuffer() {
     OutputStreamDescriptorsStartingAddress = ((uintptr_t) IHDABAR0) + 0x80 + ISS * 0x20;
 
     OutputStreamBuffer = Paging_AllocateContiguousPages(OutputStreamBufferPages);
-    memset(OutputStreamBuffer, 0, PAGING_PAGE_SIZE * OutputStreamBufferPages);
 
     if (OutputStreamBuffer == NULL) {
         printf("IHDA_InitialiseOutputStream: Couldn't find enough contiguous memory to play sound.\n");
         return;
     }
+
+    memset(OutputStreamBuffer, 0, PAGING_PAGE_SIZE * OutputStreamBufferPages);
 
     // Also find a page to read WAV file clusters in constantly
     // This is because an NVMe read address must be page-aligned
@@ -1003,14 +1012,14 @@ void IHDA_PlayWAV(const char* FilePath) {
         return;
     }
 
-    uint32_t CurrentCluster = (DirectoryEntry->FirstClusterHigh << 16) | DirectoryEntry->FirstClusterLow;
-    uint32_t StartingSector = FAT32_ClusterToSector(CurrentCluster);
+    CurrentClusterForStreaming = (DirectoryEntry->FirstClusterHigh << 16) | DirectoryEntry->FirstClusterLow;
+    StartingSectorForStreaming = FAT32_ClusterToSector(CurrentClusterForStreaming);
 
     // We'll overwrite the header later when we fill the buffer with actual audio samples
 
     IHDA_WAVHeader_t* WAVHeader = HelperBuffer;
 
-    FAT32_DriveRead(StartingSector, BPB->SectorsPerCluster, HelperBuffer);
+    FAT32_DriveRead(StartingSectorForStreaming, BPB->SectorsPerCluster, HelperBuffer);
 
     // Now WAVHeader is full of information about the WAV file!
 
@@ -1022,8 +1031,6 @@ void IHDA_PlayWAV(const char* FilePath) {
     // The first cluster's already been read into our HelperBuffer
     /* What we find will be the first offset (into the first cluster containing the audio data)
        that we will start copying audio data from */
-
-    uint32_t AudioDataReadOffsetInCluster = 0;
 
     // The "WAVE" section begins 12 bytes from the beginning of the header
     // The first chunk (i.e. the "fmt " one) begins right after this
@@ -1046,18 +1053,18 @@ void IHDA_PlayWAV(const char* FilePath) {
         // Calculate how many bytes we advance by and how many more clusters we need to read in to get there
 
         uint32_t BytesToAdvance = 8 + ChunkSize;  // ChunkID + ChunkSize = 8 bytes, then add the chunk itself
-        int16_t SpaceRemainingInCluster = ClusterSize - OffsetInCluster;
+        uint32_t SpaceRemainingInCluster = ClusterSize - OffsetInCluster;
         uint64_t BytesToAdvanceAfterCurrentCluster = (BytesToAdvance > SpaceRemainingInCluster) ? (BytesToAdvance - SpaceRemainingInCluster) : 0;
         uint32_t ClustersToAdvance = BytesToAdvanceAfterCurrentCluster / ClusterSize + ((BytesToAdvanceAfterCurrentCluster % ClusterSize) ? 1 : 0);
 
         OffsetInFile += BytesToAdvance;
 
         for (uint32_t i = 0; i < ClustersToAdvance; i++) {
-            CurrentCluster = FAT32_GetNextCluster(CurrentCluster);
+            CurrentClusterForStreaming = FAT32_GetNextCluster(CurrentClusterForStreaming);
         }
         
-        StartingSector = FAT32_ClusterToSector(CurrentCluster);
-        FAT32_DriveRead(StartingSector, BPB->SectorsPerCluster, HelperBuffer);
+        StartingSectorForStreaming = FAT32_ClusterToSector(CurrentClusterForStreaming);
+        FAT32_DriveRead(StartingSectorForStreaming, BPB->SectorsPerCluster, HelperBuffer);
 
     }
 
@@ -1070,7 +1077,37 @@ void IHDA_PlayWAV(const char* FilePath) {
     // When BDLE 0 sends an IOC, we'll fill it with new data in the interrupt stub while BDLE 1 is playing
     // And when BDLE 1 sends an IOC, we'll fill THAT with new data while BDLE 0 is playing
 
+    // Copy from where the audio data starts in the current cluster to the end of that cluster
+    // Then move onto the next clusters, fitting as many bytes as we can into the OutputStreamBuffer
+    // Save where we stopped inside the HelperBuffer cluster holder if we can't fit the whole cluster
+
+    uint32_t BytesRemainingInOutputStreamBuffer = OutputStreamBufferPages * PAGING_PAGE_SIZE;
+    OutputStreamBufferCursor = OutputStreamBuffer;
     
+    while (BytesRemainingInOutputStreamBuffer > 0) {
+
+        uint32_t SizeOfAudioChunkToCopy = ClusterSize - AudioDataReadOffsetInCluster;
+
+        BytesRemainingInOutputStreamBuffer -= SizeOfAudioChunkToCopy;
+
+        if (SizeOfAudioChunkToCopy < BytesRemainingInOutputStreamBuffer) {
+            memcpy(OutputStreamBufferCursor, HelperBuffer + AudioDataReadOffsetInCluster, SizeOfAudioChunkToCopy);
+            OutputStreamBufferCursor += SizeOfAudioChunkToCopy;
+            AudioDataReadOffsetInCluster = 0;
+        } else {
+            memcpy(OutputStreamBufferCursor, HelperBuffer + AudioDataReadOffsetInCluster, BytesRemainingInOutputStreamBuffer);
+            AudioDataReadOffsetInCluster += SizeOfAudioChunkToCopy;
+            break;
+        }
+        
+        CurrentClusterForStreaming = FAT32_GetNextCluster(CurrentClusterForStreaming);
+        StartingSectorForStreaming = FAT32_ClusterToSector(CurrentClusterForStreaming);
+        FAT32_DriveRead(StartingSectorForStreaming, BPB->SectorsPerCluster, HelperBuffer);
+
+    }
+
+    OutputStreamBufferCursor = OutputStreamBuffer;
+    BDLE0FinishedPlaying = true;
 
     // Begin playback by setting SDnCTL.RUN (bit 1) :)
     
@@ -1092,6 +1129,47 @@ void IHDA_PlayWAV(const char* FilePath) {
 // Our interrupt handler for when one of our BDL buffer halves finish playing
 
 void IHDA_Vector64InterruptHandlePassover() {
+
+    // First buffer interrupt = fill first buffer, second buffer interrupt = fill second buffer
+
+    FAT32_BPB_t* BPB = FAT32_GetBPB();
+    uint32_t ClusterSize = BPB->SectorsPerCluster * BPB->BytesPerSector;
+
+    if (BDLE0FinishedPlaying) {
+
+        BDLE0FinishedPlaying = false;
+
+        uint32_t BytesRemainingInOutputStreamBuffer = OutputStreamBufferPages * PAGING_PAGE_SIZE;
+        OutputStreamBufferCursor = OutputStreamBuffer;
+        
+        while (BytesRemainingInOutputStreamBuffer > 0) {
+
+            uint32_t SizeOfAudioChunkToCopy = ClusterSize - AudioDataReadOffsetInCluster;
+
+            BytesRemainingInOutputStreamBuffer -= SizeOfAudioChunkToCopy;
+
+            if (SizeOfAudioChunkToCopy < BytesRemainingInOutputStreamBuffer) {
+                memcpy(OutputStreamBufferCursor, HelperBuffer + AudioDataReadOffsetInCluster, SizeOfAudioChunkToCopy);
+                OutputStreamBufferCursor += SizeOfAudioChunkToCopy;
+                AudioDataReadOffsetInCluster = 0;
+            } else {
+                memcpy(OutputStreamBufferCursor, HelperBuffer + AudioDataReadOffsetInCluster, BytesRemainingInOutputStreamBuffer);
+                AudioDataReadOffsetInCluster += SizeOfAudioChunkToCopy;
+                break;
+            }
+            
+            CurrentClusterForStreaming = FAT32_GetNextCluster(CurrentClusterForStreaming);
+            StartingSectorForStreaming = FAT32_ClusterToSector(CurrentClusterForStreaming);
+            FAT32_DriveRead(StartingSectorForStreaming, BPB->SectorsPerCluster, HelperBuffer);
+
+
+        }
+
+    } else {
+
+        BDLE0FinishedPlaying = true;
+
+    }
 
     // Clear the buffer completion interrupt bit for Output Stream 1 (SD1STS.BCIS - bit 2) by writing 1 to it
     /* Since SDnSTS is write-to-clear, OR-ing a 1 and then writing the same value back will set 1s to other RW1C bits,
