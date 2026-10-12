@@ -23,8 +23,6 @@
 
 // Thanks AI for the structs :)
 
-#include <stdint.h>
-
 typedef struct __attribute__((packed)) {
     uint64_t SLBA;      // Dword 10 & 11: Starting LBA
     uint16_t NLB;       // Dword 12: Number of Blocks

@@ -61,8 +61,9 @@ static uint8_t ISS;  // Input Streams Supported
 
 // Where in a WAV file cluster we have currently reached in the process of reading in audio data
 uint32_t AudioDataReadOffsetInCluster = 0;
-void* OutputStreamBufferCursor;
-uint32_t StartingSectorForStreaming, CurrentClusterForStreaming;
+uint32_t StartingSectorForStreaming;
+uint32_t CurrentClusterForStreaming;
+uint32_t BytesToPlay;
 
 
 void IHDA_Initialise(volatile uint8_t* IHDABAR0Argument, PCI_BusDeviceFunction_t* IHDABusDeviceFunctionArgument) {
@@ -1045,6 +1046,7 @@ void IHDA_PlayWAV(const char* FilePath) {
         uint32_t ChunkSize = *(uint32_t*) (((uintptr_t) HelperBuffer) + OffsetInCluster + 4); // Right after chunk ID
 
         if (memcmp(ChunkID, "data", 4) == 0) {
+            BytesToPlay = DirectoryEntry->FileSize - OffsetInFile - 8;                             // Skip chunk ID (4 bytes)
             AudioDataReadOffsetInCluster = OffsetInCluster + 8;  // Skip chunk ID (4 bytes) + the chunk size integer (4 bytes)
             break;
         }
@@ -1082,32 +1084,37 @@ void IHDA_PlayWAV(const char* FilePath) {
     // Save where we stopped inside the HelperBuffer cluster holder if we can't fit the whole cluster
 
     uint32_t BytesRemainingInOutputStreamBuffer = OutputStreamBufferPages * PAGING_PAGE_SIZE;
-    OutputStreamBufferCursor = OutputStreamBuffer;
+    void* OutputStreamBufferCursor = OutputStreamBuffer;
     
     while (BytesRemainingInOutputStreamBuffer > 0) {
 
         uint32_t SizeOfAudioChunkToCopy = ClusterSize - AudioDataReadOffsetInCluster;
 
-        BytesRemainingInOutputStreamBuffer -= SizeOfAudioChunkToCopy;
-
         if (SizeOfAudioChunkToCopy < BytesRemainingInOutputStreamBuffer) {
             memcpy(OutputStreamBufferCursor, HelperBuffer + AudioDataReadOffsetInCluster, SizeOfAudioChunkToCopy);
+            BytesRemainingInOutputStreamBuffer -= SizeOfAudioChunkToCopy;
             OutputStreamBufferCursor += SizeOfAudioChunkToCopy;
             AudioDataReadOffsetInCluster = 0;
         } else {
             memcpy(OutputStreamBufferCursor, HelperBuffer + AudioDataReadOffsetInCluster, BytesRemainingInOutputStreamBuffer);
-            AudioDataReadOffsetInCluster += SizeOfAudioChunkToCopy;
+            AudioDataReadOffsetInCluster += BytesRemainingInOutputStreamBuffer;
             break;
         }
         
         CurrentClusterForStreaming = FAT32_GetNextCluster(CurrentClusterForStreaming);
+
+        if (CurrentClusterForStreaming == FAT32_EOF) {
+            break;
+        }
+
         StartingSectorForStreaming = FAT32_ClusterToSector(CurrentClusterForStreaming);
         FAT32_DriveRead(StartingSectorForStreaming, BPB->SectorsPerCluster, HelperBuffer);
 
     }
-
-    OutputStreamBufferCursor = OutputStreamBuffer;
+    
     BDLE0FinishedPlaying = true;
+
+    // Figure out how much audio data is there to play
 
     // Begin playback by setting SDnCTL.RUN (bit 1) :)
     
@@ -1125,49 +1132,80 @@ void IHDA_PlayWAV(const char* FilePath) {
 }
 
 
-
 // Our interrupt handler for when one of our BDL buffer halves finish playing
 
 void IHDA_Vector64InterruptHandlePassover() {
+
+    if (BytesToPlay < 500) {
+
+        uint32_t SDnCTL = IHDA_OutputStreamDescriptorRead(IHDA_24_BIT_REGISTER, 1, IHDA_SDNCTL_REGISTER_OFFSET);
+        SDnCTL &= ~(1 << 1);
+        IHDA_OutputStreamDescriptorWrite(IHDA_24_BIT_REGISTER, 1, IHDA_SDNCTL_REGISTER_OFFSET, SDnCTL);
+        
+        do {
+            putc('c');
+            SDnCTL = IHDA_OutputStreamDescriptorRead(IHDA_24_BIT_REGISTER, 1, IHDA_SDNCTL_REGISTER_OFFSET);
+        } while (SDnCTL & (1 << 1));
+
+    }
+
+    // Once a buffer has played, check if there are any more bytes to play
+    // If not, stop playback (clear SDnCTL.RUN (bit 1))
+    // If there are, subtract how much has just been played
+
+    uint32_t BDLESize = OutputStreamBufferPages * PAGING_PAGE_SIZE / 2;
+
+    if (BytesToPlay == 0) {
+
+        uint32_t SDnCTL = IHDA_OutputStreamDescriptorRead(IHDA_24_BIT_REGISTER, 1, IHDA_SDNCTL_REGISTER_OFFSET);
+        SDnCTL &= ~(1 << 1);
+        IHDA_OutputStreamDescriptorWrite(IHDA_24_BIT_REGISTER, 1, IHDA_SDNCTL_REGISTER_OFFSET, SDnCTL);
+        
+        do {
+            SDnCTL = IHDA_OutputStreamDescriptorRead(IHDA_24_BIT_REGISTER, 1, IHDA_SDNCTL_REGISTER_OFFSET);
+        } while (SDnCTL & (1 << 1));
+
+    } else {
+
+        BytesToPlay = (BDLESize < BytesToPlay) ? (BytesToPlay - BDLESize) : 0;
+
+    }
 
     // First buffer interrupt = fill first buffer, second buffer interrupt = fill second buffer
 
     FAT32_BPB_t* BPB = FAT32_GetBPB();
     uint32_t ClusterSize = BPB->SectorsPerCluster * BPB->BytesPerSector;
+    void* BDLECursor;
 
     if (BDLE0FinishedPlaying) {
-
         BDLE0FinishedPlaying = false;
+        BDLECursor = OutputStreamBuffer;
+    } else {
+        uint32_t SDnCTL = IHDA_OutputStreamDescriptorRead(IHDA_24_BIT_REGISTER, 1, IHDA_SDNCTL_REGISTER_OFFSET);
+        IHDA_OutputStreamDescriptorWrite(IHDA_24_BIT_REGISTER, 1, IHDA_SDNCTL_REGISTER_OFFSET, SDnCTL);
+        BDLE0FinishedPlaying = true;
+        BDLECursor = (void*) (((uintptr_t) OutputStreamBuffer) + OutputStreamBufferPages * PAGING_PAGE_SIZE / 2);
+    }
 
-        uint32_t BytesRemainingInOutputStreamBuffer = OutputStreamBufferPages * PAGING_PAGE_SIZE;
-        OutputStreamBufferCursor = OutputStreamBuffer;
-        
-        while (BytesRemainingInOutputStreamBuffer > 0) {
+    uint32_t BytesRemainingInBDLE = BDLESize;
 
-            uint32_t SizeOfAudioChunkToCopy = ClusterSize - AudioDataReadOffsetInCluster;
+    while (BytesRemainingInBDLE > 0) {
 
-            BytesRemainingInOutputStreamBuffer -= SizeOfAudioChunkToCopy;
+        uint32_t SizeOfAudioChunkToCopy = ClusterSize - AudioDataReadOffsetInCluster;
 
-            if (SizeOfAudioChunkToCopy < BytesRemainingInOutputStreamBuffer) {
-                memcpy(OutputStreamBufferCursor, HelperBuffer + AudioDataReadOffsetInCluster, SizeOfAudioChunkToCopy);
-                OutputStreamBufferCursor += SizeOfAudioChunkToCopy;
-                AudioDataReadOffsetInCluster = 0;
-            } else {
-                memcpy(OutputStreamBufferCursor, HelperBuffer + AudioDataReadOffsetInCluster, BytesRemainingInOutputStreamBuffer);
-                AudioDataReadOffsetInCluster += SizeOfAudioChunkToCopy;
-                break;
-            }
-            
+        if (SizeOfAudioChunkToCopy < BytesRemainingInBDLE) {
+            memcpy(BDLECursor, (void*) (((uintptr_t) HelperBuffer) + AudioDataReadOffsetInCluster), SizeOfAudioChunkToCopy);
+            BytesRemainingInBDLE -= SizeOfAudioChunkToCopy;
+            BDLECursor += SizeOfAudioChunkToCopy;
+            AudioDataReadOffsetInCluster = 0;
             CurrentClusterForStreaming = FAT32_GetNextCluster(CurrentClusterForStreaming);
             StartingSectorForStreaming = FAT32_ClusterToSector(CurrentClusterForStreaming);
             FAT32_DriveRead(StartingSectorForStreaming, BPB->SectorsPerCluster, HelperBuffer);
-
-
+        } else {
+            memcpy(BDLECursor, (void*) (((uintptr_t) HelperBuffer) + AudioDataReadOffsetInCluster), BytesRemainingInBDLE);
+            AudioDataReadOffsetInCluster += BytesRemainingInBDLE;
+            break;
         }
-
-    } else {
-
-        BDLE0FinishedPlaying = true;
 
     }
 

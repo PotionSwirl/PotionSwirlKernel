@@ -26,9 +26,11 @@ static uint16_t IOCQHead = 0;
 // MQES = Maximum Queue Entries Supported
 // DSTRD = Used to calculate doorbell stride - space between doorbell registers
 // IOSQ doorbell register offset = calculated after we create the IOSQ
+// Same with IOCQ
 static uint16_t MQES;
 static uint8_t DSTRD;
 static uint32_t IOSQDoorbellRegisterOffset;
+static uint32_t IOCQDoorbellRegisterOffset;
 
 /* After writing a CQ entry, NVMe also writes a phase bit and flips
    when the CQ wraps around. The host (us) must maintain our own phase
@@ -124,7 +126,8 @@ void NVMe_RingIOSQDoorbell() {
     NVMe_CompletionEntry_t* CompletionEntry = &IOCQ[IOCQHead];
     do {} while ((CompletionEntry->Status & 1) != IOCQPhaseBit);
     IOCQHead = (IOCQHead + 1) % 64;
-    if (IOCQHead == 0) IOCQPhaseBit ^= 1;
+    if (IOCQHead == 0) IOCQPhaseBit = !IOCQPhaseBit;
+    PCI_Write32Bit(NVMeBAR0, IOCQDoorbellRegisterOffset, IOCQHead);  // Let controller know that the next CQ slot is free
 }
 
 
@@ -237,13 +240,15 @@ void NVMe_InitialiseIOQueues() {
     NVMe_CreateIOCQ();
     NVMe_CreateIOSQ();
 
-    // The doorbell register for our queue must be calculated using DRSTD
-    // Offset = 0x1000 + (2 x QueueID x StrideBytes)
+    // The doorbell registers for our queue must be calculated using DRSTD
+    // IOSQ doorbell register offset = 0x1000 + (2 x QueueID x StrideBytes)
+    // IOCQ doorbell register offset = 0x1000 + (((2 x QueueID) + 1) x StrideBytes)
     // StrideBytes = 4 << DSTRD
 
     uint32_t QueueID = 1;
     uint32_t StrideBytes = 4 << DSTRD;
     IOSQDoorbellRegisterOffset = 0x1000 + (2 * QueueID * StrideBytes);
+    IOCQDoorbellRegisterOffset = 0x1000 + (((2 * QueueID) + 1) * StrideBytes);
 
 }
 
